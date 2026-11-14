@@ -1,0 +1,15 @@
+# Stage 2: ArcFace Actor Recognition & Verification Configuration
+arcface:
+  model_name: "w600k_r50.onnx"
+  model_pack: "buffalo_l"
+  input_size: [112, 112]
+  embedding_dimension: 512
+  metric: "cosine"
+  alignment: "similarity_transform_5pts"
+  gallery:
+    aggregation_mode: "mean_normalized"  # prototype vector per enrolled actor
+    min_reference_images: 3
+    max_reference_images: 10
+  decision_thresholds:
+    match_threshold: 0.45       # Calibrated threshold for genuine match
+    uncertain_lower_bound: 0.35 # Values in [0.35, 0.45) flagged as uncertain

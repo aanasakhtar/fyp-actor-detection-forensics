@@ -1,0 +1,27 @@
+# Stage 3: GenD Facial Manipulation Detection Configuration
+gend:
+  available_backbones:
+    clip_vit_l14:
+      repo_id: "yermandy/GenD_CLIP_L_14"
+      resolution: [224, 224]
+      normalization: "openai_clip"
+    perception_encoder:
+      repo_id: "yermandy/GenD_PE_L"
+      resolution: [224, 224]
+      normalization: "imagenet"
+    dinov3_vit_l16:
+      repo_id: "yermandy/GenD_DINOv3_L"
+      resolution: [224, 224]
+      normalization: "imagenet"
+
+  selected_default_backbone: "clip_vit_l14"
+  preprocessing:
+    bbox_expansion_factor: 1.30  # Preserves facial context & boundaries
+    crop_size: [224, 224]
+
+  inference:
+    batch_size: 16
+    decision_threshold: 0.50
+    aggregation_method: "trimmed_mean"  # options: mean, max, trimmed_mean, ratio_above_threshold
+    aggregation_percentile: 0.20
+    uncertainty_margin: 0.08  # |score - threshold| <= margin marked as uncertain

@@ -1,0 +1,19 @@
+# Global Pipeline Configuration
+project_name: "fyp-actor-detection-forensics"
+version: "0.1.0"
+seed: 42
+
+paths:
+  kaggle_input_root: "/kaggle/input"
+  kaggle_working_root: "/kaggle/working"
+  local_data_root: "./data"
+  cache_dir: "./cache"
+  checkpoints_dir: "./checkpoints"
+  results_dir: "./results"
+  predictions_dir: "./predictions"
+
+runtime:
+  device: "auto"  # auto, cuda, or cpu
+  allow_tf32: true
+  num_workers: 2
+  log_level: "INFO"

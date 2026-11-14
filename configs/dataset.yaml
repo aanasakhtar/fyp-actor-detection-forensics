@@ -1,0 +1,36 @@
+# Dataset Configuration: FaceForensics++ (FF++)
+dataset:
+  name: "FaceForensics++"
+  server: "EU2"
+  server_url: "http://kaldir.vc.in.tum.de/faceforensics/"
+  
+  categories:
+    - "original"
+    - "Deepfakes"
+    - "Face2Face"
+    - "FaceSwap"
+    - "NeuralTextures"
+    - "FaceShifter"
+
+  compression_levels:
+    - "c23"
+    - "c40"
+
+  pilot_subset:
+    enabled: true
+    num_original_videos: 10
+    num_manipulated_per_category: 10
+    preferred_compression: "c23"
+    include_c40_comparison: true
+
+  sampling:
+    mode: "uniform"
+    target_fps: 2
+    max_frames_per_video: 32
+    min_face_size: 40
+
+  splits:
+    train_ratio: 0.70
+    val_ratio: 0.15
+    test_ratio: 0.15
+    group_by_original_id: true  # Guarantees zero leakage across splits

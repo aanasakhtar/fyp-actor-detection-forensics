@@ -1,0 +1,12 @@
+# Stage 1: SCRFD Face Detection Configuration
+scrfd:
+  model_name: "det_10g.onnx"
+  model_pack: "buffalo_l"
+  input_size: [640, 640]
+  confidence_threshold: 0.50
+  nms_threshold: 0.40
+  max_faces_per_frame: 10
+  tracking:
+    enabled: true
+    iou_threshold: 0.45
+    max_lost_frames: 5
