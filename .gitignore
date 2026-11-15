@@ -60,10 +60,10 @@ ENV/
 env.bak/
 venv.bak/
 
-# FaceForensics++ & Video Datasets (Strictly ignored)
-data/
-datasets/
-raw_data/
+# FaceForensics++ & Video Datasets (Root directories only)
+/data/
+/datasets/
+/raw_data/
 *.mp4
 *.avi
 *.mov
@@ -76,9 +76,9 @@ raw_data/
 *.7z
 
 # Model weights & Checkpoints (Never commit weights)
-checkpoints/
-weights/
-models/
+/checkpoints/
+/weights/
+/models/
 *.pth
 *.pt
 *.onnx
@@ -90,15 +90,18 @@ models/
 *.pkl
 
 # Extracted data, embeddings, predictions & logs
-frames/
-crops/
-embeddings/
-predictions/
-logs/
-outputs/
-cache/
-scratch/
-runs/
+/frames/
+/crops/
+/embeddings/
+/predictions/
+/logs/
+/outputs/
+/cache/
+/scratch/
+/runs/
+
+# Explicitly ensure pipeline data module is tracked
+!src/pipeline/data/**
 
 # Result figures and generated artifacts (keep .gitkeep in results/)
 results/*
