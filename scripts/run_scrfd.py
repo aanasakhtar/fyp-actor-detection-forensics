@@ -41,7 +41,7 @@ def main():
     start_time = time.time()
 
     for idx, meta in enumerate(loader.videos):
-        cache_file = os.path.join(args.output_dir, f"{meta.video_id}_detections.json")
+        cache_file = os.path.join(args.output_dir, f"{meta.category}_{meta.video_id}_detections.json")
         if os.path.exists(cache_file):
             continue
 
