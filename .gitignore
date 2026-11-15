@@ -101,7 +101,10 @@ venv.bak/
 /runs/
 
 # Explicitly ensure pipeline data module is tracked
+!src/pipeline/data/
 !src/pipeline/data/**
+src/pipeline/data/**/__pycache__/
+src/pipeline/data/**/*.py[cod]
 
 # Result figures and generated artifacts (keep .gitkeep in results/)
 results/*
