@@ -2,7 +2,10 @@
 Visual overlays for face detection bounding boxes, facial keypoints, and track IDs.
 """
 
-import cv2
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 import numpy as np
 from typing import List
 from ..detection.detection_utils import FaceDetection
@@ -13,6 +16,8 @@ def draw_detections(
 ) -> np.ndarray:
     """Draw bounding boxes, keypoints, and track labels onto a video frame."""
     canvas = image_bgr.copy()
+    if cv2 is None:
+        return canvas
     
     for det in detections:
         x1, y1, x2, y2 = det.bbox.astype(int)

@@ -3,8 +3,16 @@ Evidence card generation for video forensic review cases.
 """
 
 import os
-import matplotlib.pyplot as plt
-import cv2
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
+
 import numpy as np
 from typing import Dict, Any, Optional
 
@@ -15,6 +23,8 @@ def generate_evidence_card(
     save_path: Optional[str] = None
 ) -> None:
     """Generate an evidence visual inspection card combining frame, crop, and scores."""
+    if plt is None or cv2 is None:
+        return
     fig, axes = plt.subplots(1, 2, figsize=(10, 5))
     
     # Left: Full frame

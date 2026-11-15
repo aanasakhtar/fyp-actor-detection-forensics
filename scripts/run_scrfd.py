@@ -58,8 +58,9 @@ def main():
                         "frame_index": d.frame_index,
                         "timestamp_sec": d.timestamp_sec,
                         "bbox": d.bbox.tolist(),
-                        "confidence": d.confidence,
-                        "track_id": d.track_id
+                        "confidence": float(d.confidence),
+                        "track_id": d.track_id,
+                        "landmarks_5": d.landmarks_5.tolist() if d.landmarks_5 is not None else None
                     })
                 total_faces += len(dets)
             total_frames += len(frames)
