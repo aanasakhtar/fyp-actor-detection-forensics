@@ -17,6 +17,18 @@ class FFppVideoMetadata:
     target_id: str             # Base/target video identifier (e.g. '003')
     source_id: Optional[str]   # Donor face identifier (e.g. '045') or None if original
 
+    @property
+    def is_manipulated(self) -> bool:
+        return self.is_fake
+
+    @property
+    def donor_id(self) -> Optional[str]:
+        return self.source_id
+
+    @property
+    def path(self) -> str:
+        return self.video_path
+
 def parse_ffpp_filename(filename: str) -> Tuple[str, Optional[str]]:
     """
     Parse an FF++ video filename (e.g. '003.mp4' or '003_045.mp4').

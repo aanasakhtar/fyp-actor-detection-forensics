@@ -22,6 +22,9 @@ def test_parse_pair_mapping():
     assert meta.target_id == "003"
     assert meta.source_id == "045"
     assert meta.is_fake is True
+    assert meta.is_manipulated is True
+    assert meta.donor_id == "045"
+    assert meta.path == "/path/to/Deepfakes/c23/videos/003_045.mp4"
     assert meta.compression == "c23"
 
 def test_leakage_free_splits_synthetic():
