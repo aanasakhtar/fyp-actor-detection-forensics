@@ -3,8 +3,14 @@ Dataset inspection and pilot download utility script.
 """
 
 import os
-import argparse
 import sys
+
+# Ensure local 'src' directory takes priority in sys.path
+src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
+import argparse
 from pipeline.data.dataset_loader import FFppDatasetLoader
 from pipeline.utils.logging import get_logger
 
@@ -18,7 +24,6 @@ def main():
 
     if args.download_pilot:
         logger.info("Downloading pilot subset from EU2 server...")
-        # Example pilot download command
         print("To download the pilot subset, run:")
         print("python faceforensics_download_v4.py ./data -d Face2Face -c c23 -n 10 --server EU2")
         return

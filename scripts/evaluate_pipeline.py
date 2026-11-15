@@ -3,6 +3,13 @@ Integrated end-to-end pipeline evaluation script.
 """
 
 import os
+import sys
+
+# Ensure local 'src' directory takes priority in sys.path
+src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
 import argparse
 import json
 import time
@@ -31,7 +38,6 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     loader = FFppDatasetLoader(args.data_dir)
     
-    # Initialize pipeline components
     scrfd = SCRFDDetector()
     tracker = IoUFaceTracker()
     arcface = ArcFaceEncoder()
@@ -39,7 +45,6 @@ def main():
     matcher = IdentityMatcher(gallery)
     gend = GenDCLIPDetector()
 
-    # Enroll original videos as registered actors
     originals = loader.filter(categories=["original"])
     for meta in originals[:5]:
         reader = VideoReader(meta.video_path)
@@ -74,7 +79,6 @@ def main():
             detected_faces += len(dets)
             
             for d in dets:
-                # ArcFace path
                 if d.landmarks_5 is not None:
                     aligned = align_face_5point(frame.image_bgr, d.landmarks_5)
                     if aligned is not None:
@@ -84,7 +88,6 @@ def main():
                             if match_res.status == "possible match":
                                 actor_matched = True
 
-                # GenD path
                 c = crop_context_face(frame.image_bgr, d.bbox)
                 if c is not None:
                     probs = gend.predict_crops([c])

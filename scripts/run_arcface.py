@@ -3,6 +3,13 @@ Standalone script to evaluate ArcFace actor verification proxy protocol.
 """
 
 import os
+import sys
+
+# Ensure local 'src' directory takes priority in sys.path
+src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
 import argparse
 import json
 import numpy as np
@@ -30,7 +37,6 @@ def main():
     encoder = ArcFaceEncoder()
     gallery = ActorReferenceGallery()
 
-    # Step 1: Enroll original videos as registered actors
     originals = loader.filter(categories=["original"])
     logger.info(f"Enrolling {min(10, len(originals))} actors into reference gallery...")
     
@@ -51,7 +57,6 @@ def main():
             actor_embeddings[meta.target_id] = embs
             gallery.enroll_actor(meta.target_id, f"Actor_{meta.target_id}", embs[:5])
 
-    # Step 2: Compute genuine and impostor similarity scores
     genuine_scores = []
     impostor_scores = []
     

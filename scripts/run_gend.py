@@ -3,6 +3,13 @@ Standalone script to run GenD deepfake manipulation detection across candidate b
 """
 
 import os
+import sys
+
+# Ensure local 'src' directory takes priority in sys.path
+src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
 import argparse
 import json
 from pipeline.data.dataset_loader import FFppDatasetLoader
