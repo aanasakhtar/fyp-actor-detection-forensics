@@ -41,6 +41,39 @@ def code_cell(source):
         "source": [line + "\n" for line in lines[:-1]] + [lines[-1]] if lines else []
     }
 
+CLONE_SNIPPET = """# 1. Secure Clone for Private Repository via Kaggle Secrets
+import os
+import sys
+
+repo_dir = "/kaggle/working/fyp-actor-detection-forensics"
+
+if not os.path.exists(repo_dir):
+    try:
+        from kaggle_secrets import UserSecretsClient
+        user_secrets = UserSecretsClient()
+        gh_token = user_secrets.get_secret("GH_TOKEN")
+        clone_url = f"https://x-access-token:{gh_token}@github.com/aanasakhtar/fyp-actor-detection-forensics.git"
+    except Exception:
+        import getpass
+        print("Note: Store your GitHub token in Kaggle Add-ons -> Secrets as 'GH_TOKEN' to avoid manual input.")
+        gh_token = getpass.getpass("Enter GitHub Personal Access Token (or press enter for public/attached): ")
+        if gh_token.strip():
+            clone_url = f"https://x-access-token:{gh_token}@github.com/aanasakhtar/fyp-actor-detection-forensics.git"
+        else:
+            clone_url = "https://github.com/aanasakhtar/fyp-actor-detection-forensics.git"
+            
+    os.system(f"git clone {clone_url} {repo_dir}")
+    print("Repository setup completed.")
+else:
+    print("Repository already cloned.")
+
+if repo_dir not in sys.path:
+    sys.path.append(os.path.join(repo_dir, "src"))
+
+%cd {repo_dir}
+!pip install -q onnxruntime-gpu insightface timm transformers
+!pip install -q -e ."""
+
 def generate_notebooks(output_dir):
     os.makedirs(output_dir, exist_ok=True)
     
@@ -48,7 +81,7 @@ def generate_notebooks(output_dir):
     nb1_cells = [
         md_cell("""# 01 — Environment Setup & Checkpoint Preparation
 ### FYP Computer Vision Pipeline: Hardware Verification & Dependency Installation
-This notebook verifies Kaggle GPU availability, installs runtime dependencies (InsightFace, ONNX Runtime GPU, Transformers), clones the research repository, and caches model checkpoints."""),
+This notebook verifies Kaggle GPU availability, installs runtime dependencies (InsightFace, ONNX Runtime GPU, Transformers), clones the private research repository securely via Kaggle Secrets, and caches model checkpoints."""),
         code_cell("""# Check GPU Accelerator and VRAM
 import torch
 print(f"CUDA Available: {torch.cuda.is_available()}")
@@ -57,19 +90,7 @@ if torch.cuda.is_available():
     print(f"Memory: {torch.cuda.get_device_properties(0).total_memory / (1024**3):.2f} GB")
 else:
     print("WARNING: Running on CPU. For deep learning inference, please enable GPU in Notebook Settings (Settings -> Accelerator -> GPU T4 x 2 or P100).")"""),
-        code_cell("""# Install Dependencies
-!pip install -q onnxruntime-gpu insightface timm transformers huggingface_hub opencv-python-headless pyyaml"""),
-        code_cell("""# Clone or Configure Repository
-import sys
-import os
-
-repo_dir = "/kaggle/working/fyp-actor-detection-forensics"
-if not os.path.exists(repo_dir):
-    !git clone https://github.com/aanasakhtar/fyp-actor-detection-forensics.git {repo_dir}
-
-sys.path.append(os.path.join(repo_dir, "src"))
-%cd {repo_dir}
-!pip install -q -e ."""),
+        code_cell(CLONE_SNIPPET),
         code_cell("""# Verify Environment and Device Utilities
 from pipeline.utils.device import get_device_info, select_device
 from pipeline.utils.reproducibility import set_seed
@@ -86,18 +107,11 @@ print("Pipeline Hardware Diagnostic:", info)""")
         md_cell("""# 02 — FaceForensics++ Dataset Exploration
 ### Inspecting Categories, Compressions, and Source-Target Pair Relationships
 This notebook explores the FaceForensics++ (FF++) dataset layout, verifies authentic vs manipulated videos, maps donor-target pairs, and sets up a pilot evaluation subset."""),
-        code_cell("""import os
-import sys
+        code_cell(CLONE_SNIPPET),
+        code_cell("""from pipeline.data.dataset_loader import FFppDatasetLoader
+from pipeline.data.metadata import parse_ffpp_filename, parse_pair_mapping
 
-# Ensure src is on path
-repo_dir = "/kaggle/working/fyp-actor-detection-forensics"
-if os.path.exists(repo_dir):
-    sys.path.append(os.path.join(repo_dir, "src"))
-    %cd {repo_dir}
-
-from pipeline.data.dataset_loader import FFppDatasetLoader
-from pipeline.data.metadata import parse_ffpp_filename, parse_pair_mapping"""),
-        code_cell("""# Specify dataset root (attached Kaggle dataset or downloaded subset)
+# Specify dataset root (attached Kaggle dataset or downloaded subset)
 DATA_ROOT = "/kaggle/input/faceforensics-pilot"
 if not os.path.exists(DATA_ROOT):
     DATA_ROOT = "./data"
@@ -121,23 +135,17 @@ print(f"Splits summary: Train={len(train_vids)}, Val={len(val_vids)}, Test={len(
         md_cell("""# 03 — SCRFD Face Detection & Tracking Evaluation
 ### Stage 1: Face Localization, 5-Point Landmarks, and Multi-Face Tracking
 Evaluates SCRFD 10G KPS across manipulation types and compression levels (c23 vs c40)."""),
-        code_cell("""import os
-import sys
-import time
+        code_cell(CLONE_SNIPPET),
+        code_cell("""import time
 import numpy as np
-
-repo_dir = "/kaggle/working/fyp-actor-detection-forensics"
-if os.path.exists(repo_dir):
-    sys.path.append(os.path.join(repo_dir, "src"))
-    %cd {repo_dir}
-
 from pipeline.data.dataset_loader import FFppDatasetLoader
 from pipeline.data.video_reader import VideoReader
 from pipeline.detection.scrfd_detector import SCRFDDetector
 from pipeline.tracking.face_tracking import IoUFaceTracker
 from pipeline.evaluation.detection_metrics import compute_detection_coverage, compute_detection_confidence_summary
-from pipeline.visualization.detection_visualization import draw_detections"""),
-        code_cell("""# Initialize Detector & Tracker
+from pipeline.visualization.detection_visualization import draw_detections
+
+# Initialize Detector & Tracker
 detector = SCRFDDetector(conf_threshold=0.50)
 tracker = IoUFaceTracker(iou_threshold=0.40)
 print("SCRFD Detector & IoU Tracker Ready.")"""),
@@ -174,15 +182,8 @@ print(f"Confidence Stats: {compute_detection_confidence_summary(all_confs)}")"""
         md_cell("""# 04 — ArcFace Actor Identification & Verification Evaluation
 ### Stage 2: Biometric Embeddings, Reference Gallery, and Cosine Matching
 Evaluates ArcFace (w600k_r50) using the defensible FF++ proxy protocol: genuine pairs, impostor pairs, and cross-identity swap verification."""),
-        code_cell("""import os
-import sys
-import numpy as np
-
-repo_dir = "/kaggle/working/fyp-actor-detection-forensics"
-if os.path.exists(repo_dir):
-    sys.path.append(os.path.join(repo_dir, "src"))
-    %cd {repo_dir}
-
+        code_cell(CLONE_SNIPPET),
+        code_cell("""import numpy as np
 from pipeline.data.dataset_loader import FFppDatasetLoader
 from pipeline.data.video_reader import VideoReader
 from pipeline.detection.scrfd_detector import SCRFDDetector
@@ -191,8 +192,9 @@ from pipeline.recognition.arcface_encoder import ArcFaceEncoder
 from pipeline.recognition.reference_gallery import ActorReferenceGallery
 from pipeline.recognition.identity_matching import IdentityMatcher
 from pipeline.evaluation.recognition_metrics import compute_verification_metrics
-from pipeline.visualization.evaluation_plots import plot_similarity_distributions"""),
-        code_cell("""# Initialize ArcFace and Reference Gallery
+from pipeline.visualization.evaluation_plots import plot_similarity_distributions
+
+# Initialize ArcFace and Reference Gallery
 detector = SCRFDDetector()
 encoder = ArcFaceEncoder()
 gallery = ActorReferenceGallery()
@@ -227,15 +229,8 @@ print(f"Enrolled {len(gallery)} actors into the reference gallery.")""")
         md_cell("""# 05 — GenD Deepfake Detection Backbone Comparison
 ### Stage 3: Evaluating CLIP ViT-L/14, Perception Encoder (PE), and DINOv3
 Compares the released GenD detector checkpoints across manipulation categories and compression levels."""),
-        code_cell("""import os
-import sys
-
-repo_dir = "/kaggle/working/fyp-actor-detection-forensics"
-if os.path.exists(repo_dir):
-    sys.path.append(os.path.join(repo_dir, "src"))
-    %cd {repo_dir}
-
-from pipeline.data.dataset_loader import FFppDatasetLoader
+        code_cell(CLONE_SNIPPET),
+        code_cell("""from pipeline.data.dataset_loader import FFppDatasetLoader
 from pipeline.data.video_reader import VideoReader
 from pipeline.detection.scrfd_detector import SCRFDDetector
 from pipeline.preprocessing.face_cropping import crop_context_face
@@ -243,8 +238,9 @@ from pipeline.forensics.clip_detector import GenDCLIPDetector
 from pipeline.forensics.pe_detector import GenDPEDetector
 from pipeline.forensics.dinov3_detector import GenDDINOv3Detector
 from pipeline.evaluation.forensic_metrics import compute_forensic_metrics
-from pipeline.visualization.evaluation_plots import plot_roc_curve, plot_confusion_matrix"""),
-        code_cell("""# Load GenD CLIP Detector
+from pipeline.visualization.evaluation_plots import plot_roc_curve, plot_confusion_matrix
+
+# Load GenD CLIP Detector
 clip_detector = GenDCLIPDetector()
 print("GenD CLIP ViT-L/14 detector loaded.")""")
     ]
@@ -256,27 +252,7 @@ print("GenD CLIP ViT-L/14 detector loaded.")""")
         md_cell("""# 06 — End-to-End Pipeline Integration & Evidence Dashboard
 ### Full Workflow: Video -> Detection -> Verification -> Forensics -> Evidence Card
 Executes the integrated computer vision pipeline on FaceForensics++ videos with intermediate result caching and exportable results."""),
-        code_cell("""import os
-import sys
-import json
-
-repo_dir = "/kaggle/working/fyp-actor-detection-forensics"
-if os.path.exists(repo_dir):
-    sys.path.append(os.path.join(repo_dir, "src"))
-    %cd {repo_dir}
-
-from pipeline.data.dataset_loader import FFppDatasetLoader
-from pipeline.data.video_reader import VideoReader
-from pipeline.detection.scrfd_detector import SCRFDDetector
-from pipeline.tracking.face_tracking import IoUFaceTracker
-from pipeline.preprocessing.face_alignment import align_face_5point
-from pipeline.preprocessing.face_cropping import crop_context_face
-from pipeline.recognition.arcface_encoder import ArcFaceEncoder
-from pipeline.recognition.reference_gallery import ActorReferenceGallery
-from pipeline.recognition.identity_matching import IdentityMatcher
-from pipeline.forensics.clip_detector import GenDCLIPDetector
-from pipeline.evaluation.pipeline_metrics import compute_pipeline_summary
-from pipeline.visualization.result_visualization import generate_evidence_card"""),
+        code_cell(CLONE_SNIPPET),
         code_cell("""# Execute Integrated Evaluation Pipeline
 !python scripts/evaluate_pipeline.py --data-dir ./data --output-dir ./results/pipeline"""),
         code_cell("""# Bundle Evaluation Artifacts for Download
@@ -286,7 +262,7 @@ print("Artifacts successfully packaged for download at /kaggle/working/fyp_evalu
     with open(os.path.join(output_dir, "06_end_to_end_pipeline.ipynb"), "w", encoding="utf-8") as f:
         json.dump(make_notebook(nb6_cells), f, indent=2)
 
-    print("All 6 Kaggle notebooks generated successfully.")
+    print("All 6 Kaggle notebooks updated with secure private repo cloning.")
 
 if __name__ == "__main__":
     generate_notebooks("D:/FYP2027/fyp-actor-detection-forensics/notebooks")
