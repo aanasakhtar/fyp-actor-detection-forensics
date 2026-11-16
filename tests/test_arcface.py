@@ -17,6 +17,8 @@ def test_gallery_enrollment_and_prototype():
     assert proto is not None
     # L2 norm must equal 1.0
     assert abs(np.linalg.norm(proto) - 1.0) < 1e-5
+    assert "actor_1" in gallery.prototypes
+    assert "actor_1" in gallery.actor_ids
 
 def test_identity_matching_thresholds():
     gallery = ActorReferenceGallery()

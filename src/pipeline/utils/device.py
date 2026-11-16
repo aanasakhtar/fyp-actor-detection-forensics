@@ -23,15 +23,25 @@ def select_device(preferred: str = "auto") -> Any:
 
 def get_onnx_providers() -> List[str]:
     """Return available ONNX Runtime execution providers in priority order."""
-    providers = []
     try:
-        import torch
-        if torch.cuda.is_available():
+        import onnxruntime as ort
+        available = ort.get_available_providers()
+        providers = []
+        if "CUDAExecutionProvider" in available:
             providers.append("CUDAExecutionProvider")
+        if "CPUExecutionProvider" in available:
+            providers.append("CPUExecutionProvider")
+        return providers or ["CPUExecutionProvider"]
     except Exception:
-        pass
-    providers.append("CPUExecutionProvider")
-    return providers
+        providers = []
+        try:
+            import torch
+            if torch.cuda.is_available():
+                providers.append("CUDAExecutionProvider")
+        except Exception:
+            pass
+        providers.append("CPUExecutionProvider")
+        return providers
 
 def get_device_info() -> Dict[str, Any]:
     """Retrieve detailed information about current compute environment and GPUs."""

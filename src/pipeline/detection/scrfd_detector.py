@@ -31,9 +31,10 @@ class SCRFDDetector:
             import cv2
             from insightface.app import FaceAnalysis
             providers = get_onnx_providers()
-            logger.info(f"Initializing InsightFace FaceAnalysis ({self.model_pack}) with providers: {providers}")
+            ctx_id = 0 if "CUDAExecutionProvider" in providers else -1
+            logger.info(f"Initializing InsightFace FaceAnalysis ({self.model_pack}) with ctx_id={ctx_id}, providers: {providers}")
             self._app = FaceAnalysis(name=self.model_pack, allowed_modules=['detection'], providers=providers)
-            self._app.prepare(ctx_id=0, det_size=self.det_size, det_thresh=self.conf_threshold)
+            self._app.prepare(ctx_id=ctx_id, det_size=self.det_size, det_thresh=self.conf_threshold)
             logger.info("SCRFD detector successfully initialized.")
         except Exception as e:
             logger.warning(f"SCRFD detector could not be loaded: {e}. Fallback mode active.")

@@ -22,6 +22,20 @@ class ActorReferenceGallery:
     
     def __init__(self):
         self.actors: Dict[str, EnrolledActor] = {}
+
+    @property
+    def prototypes(self) -> Dict[str, np.ndarray]:
+        """Dictionary mapping enrolled actor_id to their prototype embedding vector."""
+        return {
+            actor_id: actor.prototype_embedding
+            for actor_id, actor in self.actors.items()
+            if actor.prototype_embedding is not None
+        }
+
+    @property
+    def actor_ids(self) -> List[str]:
+        """List of all enrolled actor IDs."""
+        return list(self.actors.keys())
         
     def enroll_actor(self, actor_id: str, name: str, embeddings: List[np.ndarray]) -> None:
         """
