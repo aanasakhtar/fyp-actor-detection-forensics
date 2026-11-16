@@ -27,6 +27,25 @@ def test_parse_pair_mapping():
     assert meta.path == "/path/to/Deepfakes/c23/videos/003_045.mp4"
     assert meta.compression == "c23"
 
+def test_parse_celebdf_mapping():
+    # Celeb-real
+    meta_real = parse_pair_mapping("/path/to/Celeb-real/id0_0000.mp4", category="Celeb-real")
+    assert meta_real.target_id == "id0"
+    assert meta_real.source_id is None
+    assert meta_real.is_fake is False
+
+    # Celeb-synthesis
+    meta_fake = parse_pair_mapping("/path/to/Celeb-synthesis/id0_id16_0000.mp4", category="Celeb-synthesis")
+    assert meta_fake.target_id == "id0"
+    assert meta_fake.source_id == "id16"
+    assert meta_fake.is_fake is True
+
+    # YouTube-real
+    meta_yt = parse_pair_mapping("/path/to/YouTube-real/00000.mp4", category="YouTube-real")
+    assert meta_yt.target_id == "00000"
+    assert meta_yt.source_id is None
+    assert meta_yt.is_fake is False
+
 def test_leakage_free_splits_synthetic():
     loader = FFppDatasetLoader("/nonexistent/path")
     # Manually populate mock videos

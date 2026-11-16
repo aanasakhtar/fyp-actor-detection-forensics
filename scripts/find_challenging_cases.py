@@ -151,6 +151,39 @@ def analyze_video_cases(
                             "score": abs(pose["roll_deg"])
                         })
 
+                    # Check 3: Distant / Small face in background
+                    face_w = d.bbox[2] - d.bbox[0]
+                    face_h = d.bbox[3] - d.bbox[1]
+                    area_ratio = (face_w * face_h) / img_area
+                    if area_ratio <= 0.035:
+                        cases.append({
+                            "type": "small_face",
+                            "video_id": meta.video_id,
+                            "category": meta.category,
+                            "frame_index": frame.frame_index,
+                            "timestamp_sec": frame.timestamp_sec,
+                            "num_faces": num_faces,
+                            "frame_bgr": frame.image_bgr.copy(),
+                            "detections": [d],
+                            "description": f"Distant Face ({area_ratio*100:.1f}% area, Conf {d.confidence:.2f})",
+                            "score": float(1.0 - area_ratio)
+                        })
+
+                    # Check 4: Borderline / Hard-to-detect (occlusion, shadow, blur)
+                    if 0.40 <= d.confidence <= 0.65:
+                        cases.append({
+                            "type": "hard_to_detect",
+                            "video_id": meta.video_id,
+                            "category": meta.category,
+                            "frame_index": frame.frame_index,
+                            "timestamp_sec": frame.timestamp_sec,
+                            "num_faces": num_faces,
+                            "frame_bgr": frame.image_bgr.copy(),
+                            "detections": [d],
+                            "description": f"Borderline/Occluded (Conf {d.confidence:.2f})",
+                            "score": float(1.0 - d.confidence)
+                        })
+
     except Exception as e:
         logger.error(f"Error analyzing {meta.video_id}: {e}")
 
@@ -160,6 +193,7 @@ def analyze_video_cases(
 def create_edge_case_montage(
     multi_cases: List[Dict[str, Any]], 
     profile_cases: List[Dict[str, Any]], 
+    hard_cases: List[Dict[str, Any]],
     output_path: str
 ):
     """Generate a combined publication-quality figure comparing edge cases."""
@@ -168,11 +202,12 @@ def create_edge_case_montage(
 
     n_multi = len(multi_cases)
     n_profile = len(profile_cases)
-    max_cols = max(n_multi, n_profile, 1)
+    n_hard = len(hard_cases)
+    max_cols = max(n_multi, n_profile, n_hard, 1)
 
-    fig, axes = plt.subplots(2, max_cols, figsize=(5.0 * max_cols, 9.0), squeeze=False)
-    plt.suptitle("Stage 1 Stress Test: Multi-Person Frames & Non-Frontal Profile Detections", 
-                 fontsize=15, fontweight="bold", y=0.98)
+    fig, axes = plt.subplots(3, max_cols, figsize=(5.0 * max_cols, 13.5), squeeze=False)
+    plt.suptitle("Stage 1 Stress Test: Multi-Person, Extreme Profile, and Hard-to-Detect Faces", 
+                 fontsize=16, fontweight="bold", y=0.99)
 
     # Row 1: Multi-Person Frames
     for col in range(max_cols):
@@ -182,13 +217,11 @@ def create_edge_case_montage(
             annotated = draw_detections(item["frame_bgr"], item["detections"])
             rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
             ax.imshow(rgb)
-            ax.set_title(f"Multi-Person [{item['category']}]\n{item['description']} (Video: {item['video_id']})", 
-                         fontsize=11, fontweight="semibold", color="darkgreen")
-        else:
-            ax.axis("off")
+            ax.set_title(f"Multi-Person [{item['category']}]\n{item['description']} (Vid: {item['video_id']})", 
+                         fontsize=10, fontweight="semibold", color="darkgreen")
         ax.axis("off")
 
-    # Row 2: Side Profile / Tilted Faces
+    # Row 2: Side Profile Faces
     for col in range(max_cols):
         ax = axes[1, col]
         if col < n_profile:
@@ -196,14 +229,24 @@ def create_edge_case_montage(
             annotated = draw_detections(item["frame_bgr"], item["detections"])
             rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
             ax.imshow(rgb)
-            ax.set_title(f"Side-Profile [{item['category']}]\n{item['description']} (Video: {item['video_id']})", 
-                         fontsize=11, fontweight="semibold", color="darkblue")
-        else:
-            ax.axis("off")
+            ax.set_title(f"Side-Profile [{item['category']}]\n{item['description']} (Vid: {item['video_id']})", 
+                         fontsize=10, fontweight="semibold", color="darkblue")
+        ax.axis("off")
+
+    # Row 3: Hard-to-Detect / Tilted / Distant
+    for col in range(max_cols):
+        ax = axes[2, col]
+        if col < n_hard:
+            item = hard_cases[col]
+            annotated = draw_detections(item["frame_bgr"], item["detections"])
+            rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+            ax.imshow(rgb)
+            ax.set_title(f"Hard-to-Detect [{item['category']}]\n{item['description']} (Vid: {item['video_id']})", 
+                         fontsize=10, fontweight="semibold", color="darkred")
         ax.axis("off")
 
     plt.tight_layout()
-    plt.subplots_adjust(top=0.90)
+    plt.subplots_adjust(top=0.93)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     plt.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close()
@@ -231,11 +274,13 @@ def main():
         all_cases.extend(cases)
 
     multi_cases = [c for c in all_cases if c["type"] == "multi_person"]
-    profile_cases = [c for c in all_cases if c["type"] in ["side_profile", "tilted_pose"]]
+    profile_cases = [c for c in all_cases if c["type"] == "side_profile"]
+    hard_cases = [c for c in all_cases if c["type"] in ["hard_to_detect", "small_face", "tilted_pose"]]
 
     # Sort to get the most dramatic cases
     multi_cases.sort(key=lambda x: x["score"], reverse=True)
     profile_cases.sort(key=lambda x: x["score"], reverse=True)
+    hard_cases.sort(key=lambda x: x["score"], reverse=True)
 
     # Deduplicate by video_id to ensure diverse variety
     def get_diverse(cases_list, limit):
@@ -251,12 +296,14 @@ def main():
 
     top_multi = get_diverse(multi_cases, args.max_samples)
     top_profile = get_diverse(profile_cases, args.max_samples)
+    top_hard = get_diverse(hard_cases, args.max_samples)
 
     print("\n" + "="*75)
     print("           SCRFD STRESS TEST: EDGE CASE MINING RESULTS")
     print("="*75)
-    print(f"Total Multi-Person Frames Found:  {len(multi_cases)}")
-    print(f"Total Profile/Tilted Faces Found: {len(profile_cases)}")
+    print(f"Total Multi-Person Frames Found:    {len(multi_cases)}")
+    print(f"Total Extreme Profile Faces Found:  {len(profile_cases)}")
+    print(f"Total Hard-to-Detect / Tilted Found:{len(hard_cases)}")
 
     print("\nTop Multi-Person Frames:")
     for idx, c in enumerate(top_multi):
@@ -267,7 +314,7 @@ def main():
             cv2.imwrite(os.path.join(args.output_dir, fn), annotated)
             print(f"      -> Saved: {fn}")
 
-    print("\nTop Side-Profile / Tilted Faces:")
+    print("\nTop Side-Profile Faces:")
     for idx, c in enumerate(top_profile):
         print(f"  [{idx+1}] Video: {c['video_id']} ({c['category']}) | Frame: {c['frame_index']} | {c['description']}")
         if cv2 is not None:
@@ -276,10 +323,19 @@ def main():
             cv2.imwrite(os.path.join(args.output_dir, fn), annotated)
             print(f"      -> Saved: {fn}")
 
+    print("\nTop Hard-to-Detect / Tilted / Distant Faces:")
+    for idx, c in enumerate(top_hard):
+        print(f"  [{idx+1}] Video: {c['video_id']} ({c['category']}) | Frame: {c['frame_index']} | {c['description']}")
+        if cv2 is not None:
+            fn = f"hard_{c['category']}_{c['video_id']}_f{c['frame_index']}.jpg"
+            annotated = draw_detections(c["frame_bgr"], c["detections"])
+            cv2.imwrite(os.path.join(args.output_dir, fn), annotated)
+            print(f"      -> Saved: {fn}")
+
     print("="*75 + "\n")
 
     montage_path = os.path.join(args.output_dir, "scrfd_edge_cases_supervisor_montage.png")
-    create_edge_case_montage(top_multi, top_profile, montage_path)
+    create_edge_case_montage(top_multi, top_profile, top_hard, montage_path)
 
 
 if __name__ == "__main__":

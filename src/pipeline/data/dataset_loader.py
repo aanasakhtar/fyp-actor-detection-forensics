@@ -39,11 +39,14 @@ class FFppDatasetLoader:
                     break
                     
             category = "original"
-            for cat in ["Deepfakes", "Face2Face", "FaceSwap", "NeuralTextures", "FaceShifter", "DeepFakeDetection"]:
+            for cat in [
+                "Deepfakes", "Face2Face", "FaceSwap", "NeuralTextures", "FaceShifter", 
+                "DeepFakeDetection", "Celeb-real", "Celeb-synthesis", "YouTube-real"
+            ]:
                 if cat in parts:
                     category = cat
                     break
-            if "youtube" in parts or "original_sequences" in parts:
+            if ("youtube" in parts or "original_sequences" in parts) and "Celeb-real" not in parts and "YouTube-real" not in parts:
                 category = "original"
                 
             meta = parse_pair_mapping(filepath, category=category, compression=compression)

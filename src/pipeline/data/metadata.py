@@ -42,14 +42,42 @@ def parse_ffpp_filename(filename: str) -> Tuple[str, Optional[str]]:
         return parts[0], parts[1]
     return base, None
 
-def parse_pair_mapping(video_path: str, category: str, compression: str) -> FFppVideoMetadata:
+def parse_celebdf_filename(filename: str, category: str) -> Tuple[str, Optional[str]]:
+    """
+    Parse a Celeb-DF filename.
+    Celeb-real: 'id0_0000.mp4' -> target='id0', source=None
+    Celeb-synthesis: 'id0_id16_0000.mp4' -> target='id0', source='id16'
+    YouTube-real: '00000.mp4' -> target='00000', source=None
+    """
+    base = os.path.splitext(os.path.basename(filename))[0]
+    parts = base.split("_")
+    cat_lower = category.lower()
+    
+    if "synthesis" in cat_lower:
+        if len(parts) >= 3:
+            return parts[0], parts[1]
+        elif len(parts) == 2:
+            return parts[0], parts[1]
+    elif "celeb-real" in cat_lower or "celebreal" in cat_lower:
+        return parts[0], None
+        
+    return base, None
+
+def parse_pair_mapping(video_path: str, category: str, compression: str = "c23") -> FFppVideoMetadata:
     """
     Construct full FFppVideoMetadata from video file path, category, and compression.
+    Supports both FaceForensics++ and Celeb-DF benchmarks.
     """
     filename = os.path.basename(video_path)
     video_id = os.path.splitext(filename)[0]
-    target_id, source_id = parse_ffpp_filename(filename)
-    is_fake = category.lower() != "original" and "original" not in category.lower()
+    
+    cat_lower = category.lower()
+    if "celeb" in cat_lower or "youtube-real" in cat_lower:
+        target_id, source_id = parse_celebdf_filename(filename, category)
+        is_fake = "synthesis" in cat_lower
+    else:
+        target_id, source_id = parse_ffpp_filename(filename)
+        is_fake = cat_lower != "original" and "original" not in cat_lower
     
     return FFppVideoMetadata(
         video_path=video_path,
