@@ -8,7 +8,7 @@ import os
 import sys
 import argparse
 import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 # Ensure src directory is in sys.path
 src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -100,7 +100,9 @@ def inspect_logged_detections(scrfd_results_dir: str):
 def generate_visualizations(
     data_dir: str, 
     output_dir: str, 
-    max_samples: int = 6
+    max_samples: int = 6,
+    sample_index: int = 0,
+    video_id: Optional[str] = None
 ):
     """Generate annotated frames and a multi-panel supervisor report figure."""
     os.makedirs(output_dir, exist_ok=True)
@@ -113,17 +115,24 @@ def generate_visualizations(
     detector = SCRFDDetector(conf_threshold=0.50)
     tracker = IoUFaceTracker()
 
-    # Pick 1 sample video from each category to provide a representative spread
-    categories = sorted(list(set(v.category for v in loader.videos)))
-    selected_videos = []
-    for cat in categories:
-        vids = [v for v in loader.videos if v.category == cat]
-        if vids:
-            selected_videos.append(vids[0])
-            if len(selected_videos) >= max_samples:
-                break
+    if video_id:
+        selected_videos = [v for v in loader.videos if video_id in v.video_id][:max_samples]
+        if not selected_videos:
+            logger.warning(f"No video matching ID '{video_id}' found in {data_dir}.")
+            return
+    else:
+        # Pick sample video from each category based on sample_index
+        categories = sorted(list(set(v.category for v in loader.videos)))
+        selected_videos = []
+        for cat in categories:
+            vids = [v for v in loader.videos if v.category == cat]
+            if vids:
+                pick_idx = sample_index % len(vids)
+                selected_videos.append(vids[pick_idx])
+                if len(selected_videos) >= max_samples:
+                    break
 
-    print(f"Generating visual overlays for {len(selected_videos)} representative videos...")
+    print(f"Generating visual overlays for {len(selected_videos)} representative videos (sample_index={sample_index})...")
 
     report_items = []
 
@@ -233,13 +242,32 @@ def main():
     parser.add_argument("--scrfd-dir", type=str, default="/kaggle/working/results/scrfd", help="Directory with detection JSONs.")
     parser.add_argument("--output-dir", type=str, default="/kaggle/working/results/visualizations", help="Output directory for images.")
     parser.add_argument("--num-samples", type=int, default=6, help="Number of representative videos to visualize.")
+    parser.add_argument("--sample-index", type=int, default=0, help="0-based index to pick different sample videos per category.")
+    parser.add_argument("--video-id", type=str, default=None, help="Target specific video ID (e.g. '183' or '585_599').")
+    parser.add_argument("--list-videos", action="store_true", help="List all available video IDs and exit.")
     args = parser.parse_args()
+
+    if args.list_videos:
+        loader = FFppDatasetLoader(args.data_dir)
+        print(f"\nDiscovered {len(loader)} total videos in {args.data_dir}:")
+        categories = sorted(list(set(v.category for v in loader.videos)))
+        for cat in categories:
+            vids = [v for v in loader.videos if v.category == cat]
+            ids = [v.video_id for v in vids]
+            print(f"  * {cat:<16}: {', '.join(ids)}")
+        return
 
     # 1. Inspect logged detection data
     inspect_logged_detections(args.scrfd_dir)
 
     # 2. Generate visualization figures
-    generate_visualizations(args.data_dir, args.output_dir, max_samples=args.num_samples)
+    generate_visualizations(
+        args.data_dir, 
+        args.output_dir, 
+        max_samples=args.num_samples,
+        sample_index=args.sample_index,
+        video_id=args.video_id
+    )
 
 
 if __name__ == "__main__":
