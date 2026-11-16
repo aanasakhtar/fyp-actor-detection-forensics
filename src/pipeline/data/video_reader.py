@@ -77,3 +77,33 @@ class VideoReader:
             
         cap.release()
         return frames
+
+    def get_frame_by_index(self, frame_index: int) -> Optional[SampledFrame]:
+        """Extract a single frame by its zero-based frame index."""
+        try:
+            import cv2
+        except ImportError:
+            logger.error("cv2 is required for video frame sampling.")
+            return None
+
+        if frame_index < 0 or (self.total_frames > 0 and frame_index >= self.total_frames):
+            logger.warning(f"Frame index {frame_index} out of range [0, {self.total_frames - 1}]")
+            return None
+
+        cap = cv2.VideoCapture(self.video_path)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+        ret, frame = cap.read()
+        cap.release()
+
+        if not ret or frame is None:
+            return None
+
+        ts = frame_index / self.fps
+        return SampledFrame(frame_index=frame_index, timestamp_sec=ts, image_bgr=frame)
+
+    def get_frame_by_timestamp(self, timestamp_sec: float) -> Optional[SampledFrame]:
+        """Extract a single frame closest to the specified timestamp in seconds."""
+        if self.duration_sec > 0 and (timestamp_sec < 0 or timestamp_sec > self.duration_sec):
+            logger.warning(f"Timestamp {timestamp_sec:.2f}s out of range [0, {self.duration_sec:.2f}s]")
+        frame_idx = int(round(timestamp_sec * self.fps))
+        return self.get_frame_by_index(frame_idx)
