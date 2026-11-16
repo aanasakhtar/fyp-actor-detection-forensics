@@ -16,6 +16,7 @@ class EnrolledActor:
     name: str
     reference_embeddings: List[np.ndarray] = field(default_factory=list)
     prototype_embedding: Optional[np.ndarray] = None
+    reference_crops: List[np.ndarray] = field(default_factory=list)
 
 class ActorReferenceGallery:
     """Manages enrolled actor profiles and prototype biometric embeddings."""
@@ -37,7 +38,13 @@ class ActorReferenceGallery:
         """List of all enrolled actor IDs."""
         return list(self.actors.keys())
         
-    def enroll_actor(self, actor_id: str, name: str, embeddings: List[np.ndarray]) -> None:
+    def enroll_actor(
+        self, 
+        actor_id: str, 
+        name: str, 
+        embeddings: List[np.ndarray],
+        crops: Optional[List[np.ndarray]] = None
+    ) -> None:
         """
         Enroll or update an actor with multiple reference facial embeddings.
         Computes the L2-normalized mean prototype vector.
@@ -56,13 +63,22 @@ class ActorReferenceGallery:
         else:
             proto = mean_vec.astype(np.float32)
             
+        valid_crops = crops if crops is not None else []
         self.actors[actor_id] = EnrolledActor(
             actor_id=actor_id,
             name=name,
             reference_embeddings=valid_embs,
-            prototype_embedding=proto
+            prototype_embedding=proto,
+            reference_crops=valid_crops
         )
         logger.info(f"Enrolled actor '{name}' ({actor_id}) with {len(valid_embs)} reference images.")
+
+    def get_reference_crop(self, actor_id: str) -> Optional[np.ndarray]:
+        """Retrieve the primary reference face crop for visualization."""
+        actor = self.actors.get(actor_id)
+        if actor and actor.reference_crops:
+            return actor.reference_crops[0]
+        return None
 
     def remove_actor(self, actor_id: str) -> bool:
         """Remove an actor from the gallery upon consent withdrawal."""

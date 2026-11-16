@@ -41,3 +41,14 @@ def test_identity_matching_thresholds():
     vec_unknown = np.array([0.0, 1.0, 0.0], dtype=np.float32)
     res_unknown = matcher.match(vec_unknown)
     assert res_unknown.status == "unknown"
+
+def test_gallery_reference_crops():
+    gallery = ActorReferenceGallery()
+    emb = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    dummy_crop = np.zeros((112, 112, 3), dtype=np.uint8)
+    
+    gallery.enroll_actor("actor_1", "Actor One", [emb], crops=[dummy_crop])
+    retrieved_crop = gallery.get_reference_crop("actor_1")
+    assert retrieved_crop is not None
+    assert retrieved_crop.shape == (112, 112, 3)
+    assert gallery.get_reference_crop("non_existent") is None
