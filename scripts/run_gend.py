@@ -28,19 +28,30 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate GenD deepfake detection backbones.")
     parser.add_argument("--data-dir", type=str, default="./data")
     parser.add_argument("--backbone", type=str, default="clip", choices=["clip", "pe", "dinov3", "all"])
+    parser.add_argument("--backbones", nargs="+", default=None, help="List of backbones to evaluate.")
+    parser.add_argument("--scrfd-dir", type=str, default=None, help="Directory containing SCRFD detections.")
     parser.add_argument("--output-dir", type=str, default="./results/gend")
     args = parser.parse_args()
 
+    # Consolidate backbone choices
+    selected_backbones = []
+    if args.backbones:
+        selected_backbones = [b.lower() for b in args.backbones]
+    elif args.backbone == "all":
+        selected_backbones = ["clip", "pe", "dinov3"]
+    else:
+        selected_backbones = [args.backbone.lower()]
+
     os.makedirs(args.output_dir, exist_ok=True)
     loader = FFppDatasetLoader(args.data_dir)
-    detector = SCRFDDetector()
+    detector = SCRFDDetector(conf_threshold=0.50)
 
     backbones = {}
-    if args.backbone in ["clip", "all"]:
+    if "clip" in selected_backbones:
         backbones["clip_vit_l14"] = GenDCLIPDetector()
-    if args.backbone in ["pe", "all"]:
+    if "pe" in selected_backbones:
         backbones["pe_large"] = GenDPEDetector()
-    if args.backbone in ["dinov3", "all"]:
+    if "dinov3" in selected_backbones:
         backbones["dinov3_vit_l16"] = GenDDINOv3Detector()
 
     for name, model in backbones.items():
