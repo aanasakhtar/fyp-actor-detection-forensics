@@ -103,8 +103,21 @@ def analyze_video_cases(
             h_img, w_img = frame.image_bgr.shape[:2]
             img_area = float(h_img * w_img)
 
-            # Check 1: Multi-person frame
-            if num_faces >= 2:
+            # Check 1: Crowd / Multi-person scene
+            if num_faces >= 3:
+                cases.append({
+                    "type": "crowd",
+                    "video_id": meta.video_id,
+                    "category": meta.category,
+                    "frame_index": frame.frame_index,
+                    "timestamp_sec": frame.timestamp_sec,
+                    "num_faces": num_faces,
+                    "frame_bgr": frame.image_bgr.copy(),
+                    "detections": dets,
+                    "description": f"Crowd Scene: {num_faces} Faces Detected & Tracked",
+                    "score": float(num_faces * 10.0)
+                })
+            elif num_faces == 2:
                 cases.append({
                     "type": "multi_person",
                     "video_id": meta.video_id,
@@ -114,16 +127,29 @@ def analyze_video_cases(
                     "num_faces": num_faces,
                     "frame_bgr": frame.image_bgr.copy(),
                     "detections": dets,
-                    "description": f"{num_faces} Faces Localized & Tracked",
-                    "score": float(num_faces)
+                    "description": f"Multi-Person: 2 Faces Tracked",
+                    "score": 2.0
                 })
 
-            # Check 2: Side-profile face & Tilted face
+            # Check 2: Side-profile face, Face Art / Neural Distortion, and Tilted face
             for d in dets:
                 if d.landmarks_5 is not None:
                     pose = compute_pose_metrics(d.landmarks_5)
-                    # Side profile: yaw asymmetry >= 0.35 (roughly >= 25°-30° yaw)
-                    if pose["yaw_asymmetry"] >= 0.35:
+                    # Complete side profile: yaw asymmetry >= 0.42 (approx 45° to 90° profile)
+                    if pose["yaw_asymmetry"] >= 0.42:
+                        cases.append({
+                            "type": "extreme_profile",
+                            "video_id": meta.video_id,
+                            "category": meta.category,
+                            "frame_index": frame.frame_index,
+                            "timestamp_sec": frame.timestamp_sec,
+                            "num_faces": num_faces,
+                            "frame_bgr": frame.image_bgr.copy(),
+                            "detections": [d],
+                            "description": f"Complete Side Profile (Yaw ~{abs(pose['approx_yaw_deg']):.0f}°, Conf {d.confidence:.2f})",
+                            "score": float(pose["yaw_asymmetry"] * 10.0)
+                        })
+                    elif pose["yaw_asymmetry"] >= 0.32:
                         cases.append({
                             "type": "side_profile",
                             "video_id": meta.video_id,
@@ -135,6 +161,21 @@ def analyze_video_cases(
                             "detections": [d],
                             "description": f"Profile Face (Yaw ~{abs(pose['approx_yaw_deg']):.0f}°, Conf {d.confidence:.2f})",
                             "score": pose["yaw_asymmetry"]
+                        })
+
+                    # Check Face Art / Neural Rendering Texture Distortion
+                    if meta.category in ["NeuralTextures", "FaceShifter"]:
+                        cases.append({
+                            "type": "face_art_distortion",
+                            "video_id": meta.video_id,
+                            "category": meta.category,
+                            "frame_index": frame.frame_index,
+                            "timestamp_sec": frame.timestamp_sec,
+                            "num_faces": num_faces,
+                            "frame_bgr": frame.image_bgr.copy(),
+                            "detections": [d],
+                            "description": f"Face Art/Neural Warping ({meta.category}, Conf {d.confidence:.2f})",
+                            "score": float(d.confidence)
                         })
                     # Head tilt: roll >= 20°
                     elif abs(pose["roll_deg"]) >= 20.0:
@@ -209,7 +250,7 @@ def create_edge_case_montage(
     plt.suptitle("Stage 1 Stress Test: Multi-Person, Extreme Profile, and Hard-to-Detect Faces", 
                  fontsize=16, fontweight="bold", y=0.99)
 
-    # Row 1: Multi-Person Frames
+    # Row 1: Crowd / Multi-Person Frames
     for col in range(max_cols):
         ax = axes[0, col]
         if col < n_multi:
@@ -217,11 +258,11 @@ def create_edge_case_montage(
             annotated = draw_detections(item["frame_bgr"], item["detections"])
             rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
             ax.imshow(rgb)
-            ax.set_title(f"Multi-Person [{item['category']}]\n{item['description']} (Vid: {item['video_id']})", 
+            ax.set_title(f"Crowd/Multi-Person [{item['category']}]\n{item['description']} (Vid: {item['video_id']})", 
                          fontsize=10, fontweight="semibold", color="darkgreen")
         ax.axis("off")
 
-    # Row 2: Side Profile Faces
+    # Row 2: Complete Side Profile Faces
     for col in range(max_cols):
         ax = axes[1, col]
         if col < n_profile:
@@ -229,11 +270,11 @@ def create_edge_case_montage(
             annotated = draw_detections(item["frame_bgr"], item["detections"])
             rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
             ax.imshow(rgb)
-            ax.set_title(f"Side-Profile [{item['category']}]\n{item['description']} (Vid: {item['video_id']})", 
+            ax.set_title(f"Complete Profile [{item['category']}]\n{item['description']} (Vid: {item['video_id']})", 
                          fontsize=10, fontweight="semibold", color="darkblue")
         ax.axis("off")
 
-    # Row 3: Hard-to-Detect / Tilted / Distant
+    # Row 3: Face Art & Manipulation Artifacts
     for col in range(max_cols):
         ax = axes[2, col]
         if col < n_hard:
@@ -241,7 +282,7 @@ def create_edge_case_montage(
             annotated = draw_detections(item["frame_bgr"], item["detections"])
             rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
             ax.imshow(rgb)
-            ax.set_title(f"Hard-to-Detect [{item['category']}]\n{item['description']} (Vid: {item['video_id']})", 
+            ax.set_title(f"Face Art/Distortion [{item['category']}]\n{item['description']} (Vid: {item['video_id']})", 
                          fontsize=10, fontweight="semibold", color="darkred")
         ax.axis("off")
 
@@ -273,9 +314,9 @@ def main():
         cases = analyze_video_cases(meta, detector, tracker, max_frames=args.max_frames)
         all_cases.extend(cases)
 
-    multi_cases = [c for c in all_cases if c["type"] == "multi_person"]
-    profile_cases = [c for c in all_cases if c["type"] == "side_profile"]
-    hard_cases = [c for c in all_cases if c["type"] in ["hard_to_detect", "small_face", "tilted_pose"]]
+    multi_cases = [c for c in all_cases if c["type"] in ["crowd", "multi_person"]]
+    profile_cases = [c for c in all_cases if c["type"] in ["extreme_profile", "side_profile"]]
+    hard_cases = [c for c in all_cases if c["type"] in ["face_art_distortion", "hard_to_detect", "small_face", "tilted_pose"]]
 
     # Sort to get the most dramatic cases
     multi_cases.sort(key=lambda x: x["score"], reverse=True)

@@ -28,7 +28,9 @@ DATASET_PATHS = {
     "Face2Face": "manipulated_sequences/Face2Face",
     "FaceSwap": "manipulated_sequences/FaceSwap",
     "NeuralTextures": "manipulated_sequences/NeuralTextures",
-    "FaceShifter": "manipulated_sequences/FaceShifter"
+    "FaceShifter": "manipulated_sequences/FaceShifter",
+    "actors": "original_sequences/actors",
+    "DeepFakeDetection": "manipulated_sequences/DeepFakeDetection"
 }
 
 def download_file(url: str, output_path: str) -> bool:
@@ -52,7 +54,12 @@ def main():
                         help="Categories to download.")
     parser.add_argument("--compression", type=str, default="c23", choices=["c23", "c40", "raw"])
     parser.add_argument("--num-videos", type=int, default=5, help="Number of videos per category.")
+    parser.add_argument("--preset", type=str, default=None, choices=["edge-cases", None], 
+                        help="Curated preset for extreme edge cases (crowds, profiles, neural textures).")
     args = parser.parse_args()
+
+    if args.preset == "edge-cases":
+        args.categories = ["actors", "DeepFakeDetection", "NeuralTextures", "FaceShifter", "original"]
 
     os.makedirs(args.output_dir, exist_ok=True)
     logger.info(f"Connecting to official FaceForensics++ EU2 server ({BASE_URL})...")
@@ -78,12 +85,26 @@ def main():
                 for vid in pair:
                     if f"{vid}.mp4" not in filenames:
                         filenames.append(f"{vid}.mp4")
+        elif cat in ["actors", "DeepFakeDetection"]:
+            req_dfdc = urllib.request.Request(f"{BASE_URL}/misc/deepfake_detection_filenames.json", headers={"User-Agent": "Mozilla/5.0"})
+            dfdc_data = json.loads(urllib.request.urlopen(req_dfdc).read().decode("utf-8"))
+            key = "actors" if cat == "actors" else "DeepFakesDetection"
+            filenames = [f"{fn}.mp4" for fn in dfdc_data.get(key, [])]
         else:
             # List of pair video IDs: 585_599.mp4, 599_585.mp4
             filenames = []
             for pair in file_pairs:
                 filenames.append(f"{pair[0]}_{pair[1]}.mp4")
                 filenames.append(f"{pair[1]}_{pair[0]}.mp4")
+
+        # Curated serious edge cases if requested
+        if getattr(args, "preset", None) == "edge-cases":
+            if cat == "actors":
+                edge_picks = ["06__outside_talking_still_laughing.mp4", "01__kitchen_pan.mp4", "09__walking_down_street_outside_angry.mp4"]
+                filenames = [f for f in edge_picks if f in filenames] or filenames
+            elif cat == "DeepFakeDetection":
+                edge_picks = ["18_04__walking_outside_cafe_disgusted__6J3ZFEJQ.mp4", "22_23__outside_talking_still_laughing__W9MT3Q5K.mp4"]
+                filenames = [f for f in edge_picks if f in filenames] or filenames
 
         selected = filenames[:args.num_videos]
         logger.info(f"Downloading {len(selected)} videos for {cat} ({args.compression})...")
