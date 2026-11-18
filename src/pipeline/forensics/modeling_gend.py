@@ -66,15 +66,17 @@ class CLIPEncoder(nn.Module if torch is not None else object):
 class DINOEncoder(nn.Module if torch is not None else object):
     def __init__(self, model_name: str = "facebook/dinov2-with-registers-base", merge_cls_token_with_patches: Any = None):
         super().__init__()
+        import os
         from transformers import AutoImageProcessor, AutoModel
+        token = os.environ.get("HF_TOKEN")
 
         try:
-            self._preprocess = AutoImageProcessor.from_pretrained(model_name)
+            self._preprocess = AutoImageProcessor.from_pretrained(model_name, token=token)
         except Exception:
             self._preprocess = AutoImageProcessor.from_pretrained("facebook/dinov2-large")
 
         try:
-            self.backbone = AutoModel.from_pretrained(model_name)
+            self.backbone = AutoModel.from_pretrained(model_name, token=token)
         except Exception:
             # Fallback if gated repo (e.g. facebook/dinov3-vitl16-pretrain-lvd1689m requires Meta auth token)
             self.backbone = AutoModel.from_pretrained("facebook/dinov2-large")

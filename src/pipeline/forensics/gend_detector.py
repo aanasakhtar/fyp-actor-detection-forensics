@@ -28,6 +28,8 @@ class BaseGenDDetector:
     def _init_model(self) -> None:
         """Load the GenD model weights from Hugging Face or local checkpoint."""
         logger.info(f"Loading GenD model from '{self.repo_id}' onto {self.device}...")
+        import os
+        token = os.environ.get("HF_TOKEN")
 
         # 1. Direct weights loading via huggingface_hub + safetensors (bypasses meta-device and tied-weights bugs)
         try:
@@ -37,17 +39,17 @@ class BaseGenDDetector:
             import json
             import torch
 
-            config_path = hf_hub_download(repo_id=self.repo_id, filename="config.json")
+            config_path = hf_hub_download(repo_id=self.repo_id, filename="config.json", token=token)
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg_dict = json.load(f)
             config = GenDConfig(**cfg_dict)
             model = GenD(config)
 
             try:
-                weights_path = hf_hub_download(repo_id=self.repo_id, filename="model.safetensors")
+                weights_path = hf_hub_download(repo_id=self.repo_id, filename="model.safetensors", token=token)
                 state_dict = load_file(weights_path)
             except Exception:
-                weights_path = hf_hub_download(repo_id=self.repo_id, filename="pytorch_model.bin")
+                weights_path = hf_hub_download(repo_id=self.repo_id, filename="pytorch_model.bin", token=token)
                 state_dict = torch.load(weights_path, map_location="cpu")
 
             model.load_state_dict(state_dict, strict=False)
@@ -70,7 +72,7 @@ class BaseGenDDetector:
             except Exception:
                 pass
 
-            self.model = GenD.from_pretrained(self.repo_id, low_cpu_mem_usage=False)
+            self.model = GenD.from_pretrained(self.repo_id, token=token, low_cpu_mem_usage=False)
             self.model.to(self.device)
             self.model.eval()
             self.processor = getattr(self.model, "feature_extractor", None)
@@ -82,7 +84,7 @@ class BaseGenDDetector:
         # 3. Try AutoModel directly
         try:
             from transformers import AutoModel
-            self.model = AutoModel.from_pretrained(self.repo_id, trust_remote_code=True, low_cpu_mem_usage=False)
+            self.model = AutoModel.from_pretrained(self.repo_id, token=token, trust_remote_code=True, low_cpu_mem_usage=False)
             self.model.to(self.device)
             self.model.eval()
             self.processor = getattr(self.model, "feature_extractor", None)
