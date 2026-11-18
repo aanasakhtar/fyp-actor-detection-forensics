@@ -32,6 +32,9 @@ def main():
     parser.add_argument("--output-dir", type=str, default="./results/arcface", help="Output directory for metrics and plots.")
     parser.add_argument("--scrfd-dir", type=str, default=None, help="Directory containing SCRFD detection JSONs.")
     parser.add_argument("--max-frames", type=int, default=10, help="Frames sampled per video.")
+    parser.add_argument("--face-selection", type=str, default="largest",
+                        choices=["largest", "actor_match", "first"],
+                        help="Face selection strategy in multi-face frames: 'largest' (foreground protagonist, default), 'actor_match' (identity-gated), or 'first' (naive).")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -54,8 +57,12 @@ def main():
         embs = []
         for f in frames:
             dets = detector.detect_frame(f.image_bgr, f.frame_index, f.timestamp_sec)
-            if dets and dets[0].landmarks_5 is not None:
-                aligned = align_face_5point(f.image_bgr, dets[0].landmarks_5)
+            if not dets:
+                continue
+            # When enrolling reference actor, select the primary foreground face (largest area)
+            best_det = max(dets, key=lambda d: (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]))
+            if best_det.landmarks_5 is not None:
+                aligned = align_face_5point(f.image_bgr, best_det.landmarks_5)
                 if aligned is not None:
                     emb = encoder.extract_embedding(aligned)
                     if emb is not None:
@@ -69,36 +76,72 @@ def main():
     genuine_scores = []
     impostor_scores = []
     
-    logger.info(f"Evaluating verification protocol across {len(loader)} videos...")
+    logger.info(f"Evaluating verification protocol (face-selection='{args.face_selection}') across {len(loader)} videos...")
 
     for meta in loader.videos:
         reader = VideoReader(meta.video_path)
         frames = reader.sample_uniform(max_frames=max(4, args.max_frames // 2))
         for f in frames:
-            dets = detector.detect_frame(f.image_bgr)
-            if dets and dets[0].landmarks_5 is not None:
-                aligned = align_face_5point(f.image_bgr, dets[0].landmarks_5)
-                if aligned is not None:
-                    emb = encoder.extract_embedding(aligned)
-                    if emb is None:
-                        continue
+            dets = detector.detect_frame(f.image_bgr, f.frame_index, f.timestamp_sec)
+            if not dets:
+                continue
 
-                    # 1. Compare against target identity prototype
-                    target_proto = gallery.get_prototype(meta.target_id)
-                    if target_proto is not None:
-                        sim = float(np.dot(emb, target_proto))
-                        # Genuine: original or morphology-preserving reenactment
-                        if not meta.is_fake or meta.category in ["Face2Face", "NeuralTextures"]:
-                            genuine_scores.append(sim)
-                        else:
-                            # Face swapped: target body, but donor face -> Impostor
-                            impostor_scores.append(sim)
+            target_proto = gallery.get_prototype(meta.target_id)
+            chosen_emb = None
 
-                    # 2. Compare against non-target enrolled actors (cross-identity impostor test)
-                    for other_id, other_proto in gallery.prototypes.items():
-                        if other_id != meta.target_id:
-                            cross_sim = float(np.dot(emb, other_proto))
-                            impostor_scores.append(cross_sim)
+            if args.face_selection == "actor_match" and target_proto is not None and len(dets) > 1:
+                # Identity Gating: in multi-face frames, match against enrolled prototype
+                best_sim = -1.0
+                best_emb = None
+                for d in dets:
+                    if d.landmarks_5 is not None:
+                        aligned = align_face_5point(f.image_bgr, d.landmarks_5)
+                        if aligned is not None:
+                            emb = encoder.extract_embedding(aligned)
+                            if emb is not None:
+                                s = float(np.dot(emb, target_proto))
+                                if s > best_sim:
+                                    best_sim = s
+                                    best_emb = emb
+                if best_sim >= 0.40:
+                    chosen_emb = best_emb
+                else:
+                    # Actor absent from frame (cutaway shot); isolate and skip
+                    continue
+            elif args.face_selection == "largest":
+                # Spatial Saliency: select largest bounding box face (foreground actor)
+                best_det = max(dets, key=lambda d: (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]))
+                if best_det.landmarks_5 is not None:
+                    aligned = align_face_5point(f.image_bgr, best_det.landmarks_5)
+                    if aligned is not None:
+                        chosen_emb = encoder.extract_embedding(aligned)
+            else:
+                # Naive first detection
+                if dets and dets[0].landmarks_5 is not None:
+                    aligned = align_face_5point(f.image_bgr, dets[0].landmarks_5)
+                    if aligned is not None:
+                        chosen_emb = encoder.extract_embedding(aligned)
+
+            if chosen_emb is None:
+                continue
+
+            emb = chosen_emb
+
+            # 1. Compare against target identity prototype
+            if target_proto is not None:
+                sim = float(np.dot(emb, target_proto))
+                # Genuine: original or morphology-preserving reenactment
+                if not meta.is_fake or meta.category in ["Face2Face", "NeuralTextures"]:
+                    genuine_scores.append(sim)
+                else:
+                    # Face swapped: target body, but donor face -> Impostor
+                    impostor_scores.append(sim)
+
+            # 2. Compare against non-target enrolled actors (cross-identity impostor test)
+            for other_id, other_proto in gallery.prototypes.items():
+                if other_id != meta.target_id:
+                    cross_sim = float(np.dot(emb, other_proto))
+                    impostor_scores.append(cross_sim)
 
     metrics = compute_verification_metrics(genuine_scores, impostor_scores)
     
