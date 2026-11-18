@@ -32,9 +32,9 @@ def main():
     parser.add_argument("--output-dir", type=str, default="./results/arcface", help="Output directory for metrics and plots.")
     parser.add_argument("--scrfd-dir", type=str, default=None, help="Directory containing SCRFD detection JSONs.")
     parser.add_argument("--max-frames", type=int, default=10, help="Frames sampled per video.")
-    parser.add_argument("--face-selection", type=str, default="largest",
-                        choices=["largest", "actor_match", "first"],
-                        help="Face selection strategy in multi-face frames: 'largest' (foreground protagonist, default), 'actor_match' (identity-gated), or 'first' (naive).")
+    parser.add_argument("--face-selection", type=str, default="actor_match",
+                        choices=["actor_match", "largest", "first"],
+                        help="Face selection strategy: 'actor_match' (Identity Gating across all detected faces, default), 'largest' (spatial area), or 'first' (naive).")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -89,8 +89,8 @@ def main():
             target_proto = gallery.get_prototype(meta.target_id)
             chosen_emb = None
 
-            if args.face_selection == "actor_match" and target_proto is not None and len(dets) > 1:
-                # Identity Gating: in multi-face frames, match against enrolled prototype
+            if args.face_selection == "actor_match" and target_proto is not None:
+                # Identity Gating: evaluate all detected faces (foreground & background) against registered prototype
                 best_sim = -1.0
                 best_emb = None
                 for d in dets:
@@ -106,7 +106,7 @@ def main():
                 if best_sim >= 0.40:
                     chosen_emb = best_emb
                 else:
-                    # Actor absent from frame (cutaway shot); isolate and skip
+                    # Target actor not present in this frame (cutaway shot / non-target scene); isolate and skip
                     continue
             elif args.face_selection == "largest":
                 # Spatial Saliency: select largest bounding box face (foreground actor)
