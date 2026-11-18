@@ -50,12 +50,25 @@ def main():
     parser.add_argument("--scrfd-dir", type=str, default=None, help="Directory containing SCRFD detections.")
     parser.add_argument("--output-dir", type=str, default="./results/gend")
     parser.add_argument("--max-frames", type=int, default=16, help="Frames sampled per video.")
+    parser.add_argument("--max-videos", type=int, default=None, help="Maximum videos to evaluate (balanced real/fake subsampling).")
     args = parser.parse_args()
 
     actual_data_dir = resolve_data_dir(args.data_dir)
     os.makedirs(args.output_dir, exist_ok=True)
     loader = FFppDatasetLoader(actual_data_dir)
     detector = SCRFDDetector(conf_threshold=0.50)
+
+    # Subsample if max_videos requested
+    eval_videos = loader.videos
+    if args.max_videos and len(eval_videos) > args.max_videos:
+        reals = [v for v in loader.videos if not v.is_fake]
+        fakes = [v for v in loader.videos if v.is_fake]
+        n_half = args.max_videos // 2
+        rng = np.random.RandomState(42)
+        sample_reals = list(rng.choice(reals, min(len(reals), n_half), replace=False)) if reals else []
+        sample_fakes = list(rng.choice(fakes, min(len(fakes), args.max_videos - len(sample_reals)), replace=False)) if fakes else []
+        eval_videos = sample_reals + sample_fakes
+        logger.info(f"Subsampled {len(eval_videos)} videos ({len(sample_reals)} Real, {len(sample_fakes)} Fake) for pilot evaluation.")
 
     # Consolidate backbone choices
     selected_backbones = []
@@ -86,12 +99,12 @@ def main():
             logger.error(f"Backbone '{name}' weights could not be loaded. Skipping this backbone to prevent invalid benchmark metrics.")
             continue
 
-        logger.info(f"Evaluating GenD backbone: {name} across {len(loader)} videos...")
+        logger.info(f"Evaluating GenD backbone: {name} across {len(eval_videos)} videos...")
         y_true = []
         y_scores = []
         video_results = []
 
-        for meta in loader.videos:
+        for meta in eval_videos:
             reader = VideoReader(meta.video_path)
             frames = reader.sample_uniform(max_frames=args.max_frames)
             crops = []

@@ -89,6 +89,7 @@ def selective_extract_hard_cases(
 def main():
     parser = argparse.ArgumentParser(description="Download and selectively extract Celeb-DF hard cases.")
     parser.add_argument("--version", type=str, default="v2", choices=["v1", "v2"], help="Celeb-DF version.")
+    parser.add_argument("--file-id", type=str, default=None, help="Custom Google Drive file ID (e.g. from a personal 'Make a Copy' to bypass global quota).")
     parser.add_argument("--output-dir", type=str, default="/kaggle/working/data_celebdf", help="Target extraction directory.")
     parser.add_argument("--zip-path", type=str, default=None, help="Path to already downloaded zip (if any).")
     parser.add_argument("--num-real", type=int, default=10, help="Number of Celeb-real videos.")
@@ -98,7 +99,7 @@ def main():
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
-    file_id = DRIVE_IDS[args.version]
+    file_id = args.file_id or DRIVE_IDS[args.version]
     zip_file = args.zip_path or f"/kaggle/working/Celeb-DF-{args.version}.zip"
 
     # Step 1: Download if not already present

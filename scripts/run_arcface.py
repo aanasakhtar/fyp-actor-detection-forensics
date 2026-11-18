@@ -35,6 +35,8 @@ def main():
     parser.add_argument("--face-selection", type=str, default="actor_match",
                         choices=["actor_match", "largest", "first"],
                         help="Face selection strategy: 'actor_match' (Identity Gating across all detected faces, default), 'largest' (spatial area), or 'first' (naive).")
+    parser.add_argument("--max-videos", type=int, default=None,
+                        help="Maximum videos to evaluate (balanced real/fake sample).")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -42,6 +44,18 @@ def main():
     detector = SCRFDDetector(conf_threshold=0.50)
     encoder = ArcFaceEncoder()
     gallery = ActorReferenceGallery()
+
+    # Subsample test videos if requested
+    eval_videos = loader.videos
+    if args.max_videos and len(eval_videos) > args.max_videos:
+        reals = [v for v in loader.videos if not v.is_fake]
+        fakes = [v for v in loader.videos if v.is_fake]
+        n_half = args.max_videos // 2
+        rng = np.random.RandomState(42)
+        sample_reals = list(rng.choice(reals, min(len(reals), n_half), replace=False)) if reals else []
+        sample_fakes = list(rng.choice(fakes, min(len(fakes), args.max_videos - len(sample_reals)), replace=False)) if fakes else []
+        eval_videos = sample_reals + sample_fakes
+        logger.info(f"Subsampled {len(eval_videos)} videos ({len(sample_reals)} Real, {len(sample_fakes)} Fake) for ArcFace evaluation.")
 
     originals = loader.filter(categories=["original", "Celeb-real", "YouTube-real"])
     if not originals:
@@ -76,9 +90,9 @@ def main():
     genuine_scores = []
     impostor_scores = []
     
-    logger.info(f"Evaluating verification protocol (face-selection='{args.face_selection}') across {len(loader)} videos...")
+    logger.info(f"Evaluating verification protocol (face-selection='{args.face_selection}') across {len(eval_videos)} videos...")
 
-    for meta in loader.videos:
+    for meta in eval_videos:
         reader = VideoReader(meta.video_path)
         frames = reader.sample_uniform(max_frames=max(4, args.max_frames // 2))
         for f in frames:
