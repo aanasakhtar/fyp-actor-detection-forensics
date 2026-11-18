@@ -82,6 +82,10 @@ def main():
     all_metrics = {}
 
     for name, model in backbones.items():
+        if getattr(model, "model", None) is None:
+            logger.error(f"Backbone '{name}' weights could not be loaded. Skipping this backbone to prevent invalid benchmark metrics.")
+            continue
+
         logger.info(f"Evaluating GenD backbone: {name} across {len(loader)} videos...")
         y_true = []
         y_scores = []
