@@ -39,7 +39,7 @@ class BaseGenDDetector:
             except Exception:
                 pass
 
-            self.model = GenD.from_pretrained(self.repo_id)
+            self.model = GenD.from_pretrained(self.repo_id, low_cpu_mem_usage=False)
             self.model.to(self.device)
             self.model.eval()
             self.processor = getattr(self.model, "feature_extractor", None)
@@ -51,14 +51,45 @@ class BaseGenDDetector:
         # 2. Try AutoModel directly
         try:
             from transformers import AutoModel
-            self.model = AutoModel.from_pretrained(self.repo_id, trust_remote_code=True)
+            self.model = AutoModel.from_pretrained(self.repo_id, trust_remote_code=True, low_cpu_mem_usage=False)
             self.model.to(self.device)
             self.model.eval()
             self.processor = getattr(self.model, "feature_extractor", None)
             logger.info(f"Successfully loaded via AutoModel for '{self.repo_id}'")
             return
         except Exception as e_auto:
-            logger.warning(f"Could not load AutoModel for {self.repo_id} ({e_auto}). Fallback active.")
+            logger.warning(f"Could not load AutoModel for {self.repo_id} ({e_auto}). Trying direct weights loader...")
+
+        # 3. Direct weights loading fallback via huggingface_hub + safetensors
+        try:
+            from huggingface_hub import hf_hub_download
+            from safetensors.torch import load_file
+            from .modeling_gend import GenD, GenDConfig
+            import json
+            import torch
+
+            config_path = hf_hub_download(repo_id=self.repo_id, filename="config.json")
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg_dict = json.load(f)
+            config = GenDConfig(**cfg_dict)
+            model = GenD(config)
+
+            try:
+                weights_path = hf_hub_download(repo_id=self.repo_id, filename="model.safetensors")
+                state_dict = load_file(weights_path)
+            except Exception:
+                weights_path = hf_hub_download(repo_id=self.repo_id, filename="pytorch_model.bin")
+                state_dict = torch.load(weights_path, map_location="cpu")
+
+            model.load_state_dict(state_dict, strict=False)
+            model.to(self.device)
+            model.eval()
+            self.model = model
+            self.processor = getattr(self.model, "feature_extractor", None)
+            logger.info(f"Successfully loaded GenD weights directly for '{self.repo_id}'")
+            return
+        except Exception as e_direct:
+            logger.warning(f"Direct weights loading failed for {self.repo_id} ({e_direct}). Offline fallback active.")
             self.model = None
             self.processor = None
 

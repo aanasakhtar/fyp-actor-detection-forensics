@@ -67,12 +67,16 @@ def main():
         selected_backbones = [args.backbone.lower()]
 
     backbones = {}
-    if "clip" in selected_backbones:
-        backbones["clip_vit_l14"] = GenDCLIPDetector()
-    if "pe" in selected_backbones:
-        backbones["pe_large"] = GenDPEDetector()
-    if "dinov3" in selected_backbones:
-        backbones["dinov3_vit_l16"] = GenDDINOv3Detector()
+    for b_key in selected_backbones:
+        try:
+            if b_key == "clip":
+                backbones["clip_vit_l14"] = GenDCLIPDetector()
+            elif b_key == "pe":
+                backbones["pe_large"] = GenDPEDetector()
+            elif b_key == "dinov3":
+                backbones["dinov3_vit_l16"] = GenDDINOv3Detector()
+        except Exception as e_init:
+            logger.error(f"Failed to initialize backbone '{b_key}': {e_init}. Skipping.")
 
     logger.info(f"Loaded dataset: {len(loader)} total videos from '{actual_data_dir}'")
     all_metrics = {}

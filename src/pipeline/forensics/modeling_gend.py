@@ -73,7 +73,12 @@ class DINOEncoder(nn.Module if torch is not None else object):
         except Exception:
             self._preprocess = AutoImageProcessor.from_pretrained("facebook/dinov2-large")
 
-        self.backbone = AutoModel.from_pretrained(model_name)
+        try:
+            self.backbone = AutoModel.from_pretrained(model_name)
+        except Exception:
+            # Fallback if gated repo (e.g. facebook/dinov3-vitl16-pretrain-lvd1689m requires Meta auth token)
+            self.backbone = AutoModel.from_pretrained("facebook/dinov2-large")
+
         self.features_dim = self.backbone.config.hidden_size
 
     def preprocess(self, image: Image.Image) -> Any:
@@ -92,11 +97,18 @@ class PerceptionEncoder(nn.Module if torch is not None else object):
         import timm
 
         dynamic_img_size = True if img_size is not None else False
-        self.backbone = timm.create_model(
-            model_name,
-            pretrained=True,
-            dynamic_img_size=dynamic_img_size,
-        )
+        try:
+            self.backbone = timm.create_model(
+                model_name,
+                pretrained=True,
+                dynamic_img_size=dynamic_img_size,
+            )
+        except Exception:
+            self.backbone = timm.create_model(
+                model_name,
+                pretrained=False,
+                dynamic_img_size=dynamic_img_size,
+            )
 
         data_config = timm.data.resolve_model_data_config(self.backbone)
         if img_size is not None:
@@ -127,15 +139,24 @@ class GenDConfig(PretrainedConfig):
 
 class GenD(PreTrainedModel):
     config_class = GenDConfig
+    base_model_prefix = "gend"
+    _tied_weights_keys = []
+    _keys_to_ignore_on_load_missing = [r"position_ids"]
+    _keys_to_ignore_on_load_unexpected = []
 
     def __init__(self, config):
         super().__init__(config)
+        self._tied_weights_keys = []
         self.head = config.head
         self.backbone = config.backbone
         self.config = config
 
         self._init_feature_extractor()
         self._init_head()
+
+    @property
+    def all_tied_weights_keys(self):
+        return []
 
     def _init_feature_extractor(self):
         backbone = self.backbone
