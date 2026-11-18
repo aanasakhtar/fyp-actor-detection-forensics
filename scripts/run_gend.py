@@ -75,6 +75,7 @@ def main():
         backbones["dinov3_vit_l16"] = GenDDINOv3Detector()
 
     logger.info(f"Loaded dataset: {len(loader)} total videos from '{actual_data_dir}'")
+    all_metrics = {}
 
     for name, model in backbones.items():
         logger.info(f"Evaluating GenD backbone: {name} across {len(loader)} videos...")
@@ -110,6 +111,7 @@ def main():
                 })
 
         metrics = compute_forensic_metrics(y_true, y_scores)
+        all_metrics[name] = metrics
         cm = metrics.get("confusion_matrix", [[0, 0], [0, 0]])
         tn, fp = cm[0][0], cm[0][1]
         fn, tp = cm[1][0], cm[1][1]
@@ -158,6 +160,20 @@ def main():
             print(f"[+] Saved evaluation plot to: {plot_file}")
         except Exception as e:
             logger.warning(f"Could not generate evaluation plot: {e}")
+
+    if len(all_metrics) > 1:
+        print("\n" + "="*84)
+        print("         STAGE 3: GEND MULTI-BACKBONE FORENSIC BENCHMARK SUMMARY")
+        print("="*84)
+        print(f"{'Backbone':<20} {'ROC-AUC':<10} {'PR-AUC':<10} {'Accuracy':<12} {'Precision':<12} {'Recall':<10} {'F1':<8}")
+        print("-" * 84)
+        for b_name, m in all_metrics.items():
+            print(f"{b_name:<20} {m['roc_auc']:<10.4f} {m['pr_auc']:<10.4f} {m['accuracy']*100:<11.2f}% {m['precision']*100:<11.2f}% {m['recall']*100:<9.2f}% {m['f1']:<8.4f}")
+        print("="*84 + "\n")
+        summary_file = os.path.join(args.output_dir, "multi_backbone_summary.json")
+        with open(summary_file, "w") as f:
+            json.dump(all_metrics, f, indent=2)
+        print(f"[+] Saved multi-backbone comparison to: {summary_file}")
 
 if __name__ == "__main__":
     main()

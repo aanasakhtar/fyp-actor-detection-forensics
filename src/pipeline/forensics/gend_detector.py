@@ -29,19 +29,24 @@ class BaseGenDDetector:
         """Load the GenD model weights from Hugging Face or local checkpoint."""
         logger.info(f"Loading GenD model from '{self.repo_id}' onto {self.device}...")
 
-        # 1. Load Model Architecture & Weights via AutoModel
+        # 1. Load Model Architecture & Weights via AutoModel (author's official Hugging Face bundle)
         try:
             from transformers import AutoModel
             self.model = AutoModel.from_pretrained(self.repo_id, trust_remote_code=True)
             self.model.to(self.device)
             self.model.eval()
-            logger.info(f"Successfully loaded model weights from '{self.repo_id}'")
+            logger.info(f"Successfully loaded author's bundled GenD model from '{self.repo_id}'")
         except Exception as e_model:
             logger.warning(f"Could not load AutoModel for {self.repo_id} ({e_model}). Fallback mode active.")
             self.model = None
 
-        # 2. Load Image Processor
-        # GenD repos do not bundle a standalone preprocessor_config.json; fallback to base vision backbone processor
+        # 2. Check if author bundled a native feature_extractor inside the model instance
+        if self.model is not None and hasattr(self.model, "feature_extractor"):
+            logger.info(f"Using author's native bundled feature_extractor for {self.repo_id}.")
+            self.processor = getattr(self.model, "feature_extractor")
+            return
+
+        # 3. Fallback to base vision backbone processor if not bundled
         base_processor_id = "openai/clip-vit-large-patch14"
         if "dinov" in self.repo_id.lower():
             base_processor_id = "facebook/dinov2-large"
@@ -77,9 +82,17 @@ class BaseGenDDetector:
             # Convert BGR crops to RGB PIL images
             pil_images = [Image.fromarray(cv2.cvtColor(c, cv2.COLOR_BGR2RGB)) for c in crop_images_bgr]
 
-            if self.processor is not None:
-                inputs = self.processor(images=pil_images, return_tensors="pt")
-                pixel_values = inputs["pixel_values"].to(self.device)
+            # Use author's native bundled feature_extractor if available
+            if hasattr(self.model, "feature_extractor") and hasattr(self.model.feature_extractor, "preprocess"):
+                tensors = torch.stack([self.model.feature_extractor.preprocess(img) for img in pil_images]).to(self.device)
+                pixel_values = tensors
+            elif self.processor is not None:
+                if hasattr(self.processor, "preprocess"):
+                    tensors = torch.stack([self.processor.preprocess(img) for img in pil_images]).to(self.device)
+                    pixel_values = tensors
+                else:
+                    inputs = self.processor(images=pil_images, return_tensors="pt")
+                    pixel_values = inputs["pixel_values"].to(self.device)
             else:
                 # Built-in tensor normalization fallback (OpenAI CLIP statistics)
                 mean = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
