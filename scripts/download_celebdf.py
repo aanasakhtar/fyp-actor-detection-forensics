@@ -38,13 +38,18 @@ def download_with_gdown(file_id: str, output_path: str) -> bool:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "gdown"])
         import gdown
 
-    url = f"https://drive.google.com/uc?id={file_id}"
     try:
-        gdown.download(url, output_path, quiet=False)
+        # Use id=file_id parameter for automatic virus scan confirmation on 16.7GB archive
+        gdown.download(id=file_id, output=output_path, quiet=False)
         return os.path.exists(output_path) and os.path.getsize(output_path) > 1000
-    except Exception as e:
-        logger.error(f"Failed to download via gdown: {e}")
-        return False
+    except Exception:
+        url = f"https://drive.google.com/uc?id={file_id}"
+        try:
+            gdown.download(url, output_path, quiet=False)
+            return os.path.exists(output_path) and os.path.getsize(output_path) > 1000
+        except Exception as e:
+            logger.error(f"Failed to download via gdown: {e}")
+            return False
 
 
 def selective_extract_hard_cases(
