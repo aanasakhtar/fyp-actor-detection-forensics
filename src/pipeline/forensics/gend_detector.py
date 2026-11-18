@@ -23,53 +23,38 @@ class BaseGenDDetector:
         self.decision_threshold = decision_threshold
         self.model = None
         self.processor = None
-        self.pipeline = None
         self._init_model()
         
     def _init_model(self) -> None:
         """Load the GenD model weights from Hugging Face or local checkpoint."""
         logger.info(f"Loading GenD model from '{self.repo_id}' onto {self.device}...")
-        self.pipeline = None
 
-        # 1. Try high-level Hugging Face pipeline
+        # 1. Load Model Architecture & Weights via AutoModel
         try:
-            from transformers import pipeline
-            device_arg = 0 if str(self.device).startswith("cuda") else -1
-            self.pipeline = pipeline(
-                "image-classification", 
-                model=self.repo_id, 
-                device=device_arg,
-                trust_remote_code=True
-            )
-            logger.info(f"Successfully loaded {self.repo_id} via HuggingFace pipeline.")
-            return
-        except Exception as e1:
-            logger.debug(f"Pipeline loading failed ({e1}), attempting AutoModelForImageClassification...")
-
-        # 2. Try AutoModelForImageClassification with trust_remote_code
-        try:
-            from transformers import AutoModelForImageClassification, AutoImageProcessor
-            self.processor = AutoImageProcessor.from_pretrained(self.repo_id, trust_remote_code=True)
-            self.model = AutoModelForImageClassification.from_pretrained(self.repo_id, trust_remote_code=True)
-            self.model.to(self.device)
-            self.model.eval()
-            logger.info(f"Successfully loaded {self.repo_id} via AutoModelForImageClassification.")
-            return
-        except Exception as e2:
-            logger.debug(f"AutoModelForImageClassification failed ({e2}), attempting AutoModel...")
-
-        # 3. Try AutoModel with trust_remote_code
-        try:
-            from transformers import AutoModel, AutoImageProcessor
-            self.processor = AutoImageProcessor.from_pretrained(self.repo_id, trust_remote_code=True)
+            from transformers import AutoModel
             self.model = AutoModel.from_pretrained(self.repo_id, trust_remote_code=True)
             self.model.to(self.device)
             self.model.eval()
-            logger.info(f"Successfully loaded {self.repo_id} via AutoModel.")
-            return
-        except Exception as e3:
-            logger.warning(f"All loaders for {self.repo_id} failed: pipeline ({e1}), AutoModelClass ({e2}), AutoModel ({e3}). Fallback mode active.")
+            logger.info(f"Successfully loaded model weights from '{self.repo_id}'")
+        except Exception as e_model:
+            logger.warning(f"Could not load AutoModel for {self.repo_id} ({e_model}). Fallback mode active.")
             self.model = None
+
+        # 2. Load Image Processor
+        # GenD repos do not bundle a standalone preprocessor_config.json; fallback to base vision backbone processor
+        base_processor_id = "openai/clip-vit-large-patch14"
+        if "dinov" in self.repo_id.lower():
+            base_processor_id = "facebook/dinov2-large"
+
+        try:
+            from transformers import AutoImageProcessor
+            try:
+                self.processor = AutoImageProcessor.from_pretrained(self.repo_id, trust_remote_code=True)
+            except Exception:
+                logger.info(f"Using base vision processor '{base_processor_id}' for {self.repo_id}...")
+                self.processor = AutoImageProcessor.from_pretrained(base_processor_id)
+        except Exception as e_proc:
+            logger.warning(f"AutoImageProcessor unavailable ({e_proc}). Built-in normalization active.")
             self.processor = None
 
     def predict_crops(self, crop_images_bgr: List[np.ndarray]) -> List[float]:
@@ -80,55 +65,63 @@ class BaseGenDDetector:
         if not crop_images_bgr:
             return []
 
+        if self.model is None:
+            # Fallback for offline dev
+            return [0.0] * len(crop_images_bgr)
+
         try:
             import torch
             from PIL import Image
             import cv2
-        except ImportError:
-            return [0.0] * len(crop_images_bgr)
 
-        # 1. Pipeline inference path
-        if getattr(self, "pipeline", None) is not None:
-            try:
-                pil_images = [Image.fromarray(cv2.cvtColor(c, cv2.COLOR_BGR2RGB)) for c in crop_images_bgr]
-                results = self.pipeline(pil_images, top_k=None)
-                if isinstance(results, dict):
-                    results = [[results]]
-                elif isinstance(results, list) and results and isinstance(results[0], dict):
-                    results = [results]
+            # Convert BGR crops to RGB PIL images
+            pil_images = [Image.fromarray(cv2.cvtColor(c, cv2.COLOR_BGR2RGB)) for c in crop_images_bgr]
 
-                fake_probs = []
-                for r in results:
-                    fake_score = 0.50
-                    for item in r:
-                        lbl = str(item.get("label", "")).lower()
-                        score = float(item.get("score", 0.0))
-                        if any(k in lbl for k in ["fake", "synth", "manip", "deepfake"]) or lbl in ["1", "label_1"]:
-                            fake_score = score
-                            break
-                        elif any(k in lbl for k in ["real", "pristine", "original"]) or lbl in ["0", "label_0"]:
-                            fake_score = 1.0 - score
-                    fake_probs.append(fake_score)
-                return fake_probs
-            except Exception as e:
-                logger.error(f"Pipeline inference failed ({e}), attempting PyTorch model...")
+            if self.processor is not None:
+                inputs = self.processor(images=pil_images, return_tensors="pt")
+                pixel_values = inputs["pixel_values"].to(self.device)
+            else:
+                # Built-in tensor normalization fallback (OpenAI CLIP statistics)
+                mean = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
+                std = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
+                tensors = []
+                for img in pil_images:
+                    arr = np.array(img.resize((224, 224)), dtype=np.float32) / 255.0
+                    normed = (arr - mean) / std
+                    tensors.append(normed.transpose(2, 0, 1))
+                pixel_values = torch.tensor(np.stack(tensors), dtype=torch.float32).to(self.device)
 
-        # 2. PyTorch model inference path
-        if self.model is not None and self.processor is not None:
-            try:
-                pil_images = [Image.fromarray(cv2.cvtColor(c, cv2.COLOR_BGR2RGB)) for c in crop_images_bgr]
-                inputs = self.processor(images=pil_images, return_tensors="pt").to(self.device)
-                with torch.no_grad():
-                    outputs = self.model(**inputs)
-                    logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
-                    probs = torch.softmax(logits, dim=-1)
+            with torch.no_grad():
+                try:
+                    outputs = self.model(pixel_values)
+                except TypeError:
+                    outputs = self.model(pixel_values=pixel_values)
+
+                # Extract logits
+                if hasattr(outputs, "logits"):
+                    logits = outputs.logits
+                elif isinstance(outputs, torch.Tensor):
+                    logits = outputs
+                elif hasattr(outputs, "logits_labels"):
+                    logits = outputs.logits_labels
+                elif isinstance(outputs, (list, tuple)) and len(outputs) > 0:
+                    logits = outputs[0]
+                else:
+                    logits = outputs
+
+                probs = torch.softmax(logits, dim=-1)
+
+                # Binary classification (Class 0: Real, Class 1: Fake)
+                if probs.shape[-1] >= 2:
                     fake_probs = probs[:, 1].detach().cpu().numpy().tolist()
-                    return fake_probs
-            except Exception as e:
-                logger.error(f"Inference error in GenD PyTorch model: {e}")
-                return [0.0] * len(crop_images_bgr)
+                else:
+                    fake_probs = probs[:, 0].detach().cpu().numpy().tolist()
 
-        return [0.0] * len(crop_images_bgr)
+                return [float(p) for p in fake_probs]
+
+        except Exception as e:
+            logger.error(f"Inference error in GenD ({self.repo_id}): {e}")
+            return [0.0] * len(crop_images_bgr)
 
     @staticmethod
     def aggregate_scores(
