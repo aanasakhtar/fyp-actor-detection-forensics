@@ -29,37 +29,37 @@ class BaseGenDDetector:
         """Load the GenD model weights from Hugging Face or local checkpoint."""
         logger.info(f"Loading GenD model from '{self.repo_id}' onto {self.device}...")
 
-        # 1. Load Model Architecture & Weights via AutoModel (author's official Hugging Face bundle)
+        # 1. Native author GenD class loading with Hugging Face auto registration
+        try:
+            from .modeling_gend import GenD, GenDConfig
+            from transformers import AutoConfig, AutoModel
+            try:
+                AutoConfig.register("GenD", GenDConfig)
+                AutoModel.register(GenDConfig, GenD)
+            except Exception:
+                pass
+
+            self.model = GenD.from_pretrained(self.repo_id)
+            self.model.to(self.device)
+            self.model.eval()
+            self.processor = getattr(self.model, "feature_extractor", None)
+            logger.info(f"Successfully loaded author's native GenD architecture from '{self.repo_id}'")
+            return
+        except Exception as e_native:
+            logger.warning(f"Native GenD loading encountered: {e_native}. Trying AutoModel fallback...")
+
+        # 2. Try AutoModel directly
         try:
             from transformers import AutoModel
             self.model = AutoModel.from_pretrained(self.repo_id, trust_remote_code=True)
             self.model.to(self.device)
             self.model.eval()
-            logger.info(f"Successfully loaded author's bundled GenD model from '{self.repo_id}'")
-        except Exception as e_model:
-            logger.warning(f"Could not load AutoModel for {self.repo_id} ({e_model}). Fallback mode active.")
-            self.model = None
-
-        # 2. Check if author bundled a native feature_extractor inside the model instance
-        if self.model is not None and hasattr(self.model, "feature_extractor"):
-            logger.info(f"Using author's native bundled feature_extractor for {self.repo_id}.")
-            self.processor = getattr(self.model, "feature_extractor")
+            self.processor = getattr(self.model, "feature_extractor", None)
+            logger.info(f"Successfully loaded via AutoModel for '{self.repo_id}'")
             return
-
-        # 3. Fallback to base vision backbone processor if not bundled
-        base_processor_id = "openai/clip-vit-large-patch14"
-        if "dinov" in self.repo_id.lower():
-            base_processor_id = "facebook/dinov2-large"
-
-        try:
-            from transformers import AutoImageProcessor
-            try:
-                self.processor = AutoImageProcessor.from_pretrained(self.repo_id, trust_remote_code=True)
-            except Exception:
-                logger.info(f"Using base vision processor '{base_processor_id}' for {self.repo_id}...")
-                self.processor = AutoImageProcessor.from_pretrained(base_processor_id)
-        except Exception as e_proc:
-            logger.warning(f"AutoImageProcessor unavailable ({e_proc}). Built-in normalization active.")
+        except Exception as e_auto:
+            logger.warning(f"Could not load AutoModel for {self.repo_id} ({e_auto}). Fallback active.")
+            self.model = None
             self.processor = None
 
     def predict_crops(self, crop_images_bgr: List[np.ndarray]) -> List[float]:
@@ -82,33 +82,27 @@ class BaseGenDDetector:
             # Convert BGR crops to RGB PIL images
             pil_images = [Image.fromarray(cv2.cvtColor(c, cv2.COLOR_BGR2RGB)) for c in crop_images_bgr]
 
-            # Use author's native bundled feature_extractor if available
+            # 1. Use author's native bundled feature_extractor if available
             if hasattr(self.model, "feature_extractor") and hasattr(self.model.feature_extractor, "preprocess"):
                 tensors = torch.stack([self.model.feature_extractor.preprocess(img) for img in pil_images]).to(self.device)
-                pixel_values = tensors
-            elif self.processor is not None:
-                if hasattr(self.processor, "preprocess"):
-                    tensors = torch.stack([self.processor.preprocess(img) for img in pil_images]).to(self.device)
-                    pixel_values = tensors
-                else:
-                    inputs = self.processor(images=pil_images, return_tensors="pt")
-                    pixel_values = inputs["pixel_values"].to(self.device)
+            elif self.processor is not None and hasattr(self.processor, "preprocess"):
+                tensors = torch.stack([self.processor.preprocess(img) for img in pil_images]).to(self.device)
+            elif self.processor is not None and hasattr(self.processor, "__call__"):
+                inputs = self.processor(images=pil_images, return_tensors="pt")
+                tensors = inputs["pixel_values"].to(self.device)
             else:
                 # Built-in tensor normalization fallback (OpenAI CLIP statistics)
                 mean = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
                 std = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
-                tensors = []
+                batch = []
                 for img in pil_images:
                     arr = np.array(img.resize((224, 224)), dtype=np.float32) / 255.0
                     normed = (arr - mean) / std
-                    tensors.append(normed.transpose(2, 0, 1))
-                pixel_values = torch.tensor(np.stack(tensors), dtype=torch.float32).to(self.device)
+                    batch.append(normed.transpose(2, 0, 1))
+                tensors = torch.tensor(np.stack(batch), dtype=torch.float32).to(self.device)
 
             with torch.no_grad():
-                try:
-                    outputs = self.model(pixel_values)
-                except TypeError:
-                    outputs = self.model(pixel_values=pixel_values)
+                outputs = self.model(tensors)
 
                 # Extract logits
                 if hasattr(outputs, "logits"):
