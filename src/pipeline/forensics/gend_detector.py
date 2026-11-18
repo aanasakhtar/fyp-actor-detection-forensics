@@ -29,38 +29,7 @@ class BaseGenDDetector:
         """Load the GenD model weights from Hugging Face or local checkpoint."""
         logger.info(f"Loading GenD model from '{self.repo_id}' onto {self.device}...")
 
-        # 1. Native author GenD class loading with Hugging Face auto registration
-        try:
-            from .modeling_gend import GenD, GenDConfig
-            from transformers import AutoConfig, AutoModel
-            try:
-                AutoConfig.register("GenD", GenDConfig)
-                AutoModel.register(GenDConfig, GenD)
-            except Exception:
-                pass
-
-            self.model = GenD.from_pretrained(self.repo_id, low_cpu_mem_usage=False)
-            self.model.to(self.device)
-            self.model.eval()
-            self.processor = getattr(self.model, "feature_extractor", None)
-            logger.info(f"Successfully loaded author's native GenD architecture from '{self.repo_id}'")
-            return
-        except Exception as e_native:
-            logger.warning(f"Native GenD loading encountered: {e_native}. Trying AutoModel fallback...")
-
-        # 2. Try AutoModel directly
-        try:
-            from transformers import AutoModel
-            self.model = AutoModel.from_pretrained(self.repo_id, trust_remote_code=True, low_cpu_mem_usage=False)
-            self.model.to(self.device)
-            self.model.eval()
-            self.processor = getattr(self.model, "feature_extractor", None)
-            logger.info(f"Successfully loaded via AutoModel for '{self.repo_id}'")
-            return
-        except Exception as e_auto:
-            logger.warning(f"Could not load AutoModel for {self.repo_id} ({e_auto}). Trying direct weights loader...")
-
-        # 3. Direct weights loading fallback via huggingface_hub + safetensors
+        # 1. Direct weights loading via huggingface_hub + safetensors (bypasses meta-device and tied-weights bugs)
         try:
             from huggingface_hub import hf_hub_download
             from safetensors.torch import load_file
@@ -89,7 +58,38 @@ class BaseGenDDetector:
             logger.info(f"Successfully loaded GenD weights directly for '{self.repo_id}'")
             return
         except Exception as e_direct:
-            logger.warning(f"Direct weights loading failed for {self.repo_id} ({e_direct}). Offline fallback active.")
+            logger.warning(f"Direct weights loading encountered: {e_direct}. Trying native GenD from_pretrained...")
+
+        # 2. Native author GenD class loading with Hugging Face auto registration
+        try:
+            from .modeling_gend import GenD, GenDConfig
+            from transformers import AutoConfig, AutoModel
+            try:
+                AutoConfig.register("GenD", GenDConfig)
+                AutoModel.register(GenDConfig, GenD)
+            except Exception:
+                pass
+
+            self.model = GenD.from_pretrained(self.repo_id, low_cpu_mem_usage=False)
+            self.model.to(self.device)
+            self.model.eval()
+            self.processor = getattr(self.model, "feature_extractor", None)
+            logger.info(f"Successfully loaded author's native GenD architecture from '{self.repo_id}'")
+            return
+        except Exception as e_native:
+            logger.warning(f"Native GenD loading encountered: {e_native}. Trying AutoModel fallback...")
+
+        # 3. Try AutoModel directly
+        try:
+            from transformers import AutoModel
+            self.model = AutoModel.from_pretrained(self.repo_id, trust_remote_code=True, low_cpu_mem_usage=False)
+            self.model.to(self.device)
+            self.model.eval()
+            self.processor = getattr(self.model, "feature_extractor", None)
+            logger.info(f"Successfully loaded via AutoModel for '{self.repo_id}'")
+            return
+        except Exception as e_auto:
+            logger.warning(f"Could not load AutoModel for {self.repo_id} ({e_auto}). Offline fallback active.")
             self.model = None
             self.processor = None
 

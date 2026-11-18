@@ -97,19 +97,29 @@ class PerceptionEncoder(nn.Module if torch is not None else object):
         import timm
 
         dynamic_img_size = True if img_size is not None else False
-        try:
-            self.backbone = timm.create_model(
-                model_name,
-                pretrained=True,
-                dynamic_img_size=dynamic_img_size,
-            )
-        except Exception:
-            self.backbone = timm.create_model(
-                model_name,
-                pretrained=False,
-                dynamic_img_size=dynamic_img_size,
-            )
+        backbone = None
+        candidate_names = [
+            model_name,
+            f"hf-hub:timm/{model_name}.fb",
+            f"hf-hub:timm/{model_name}",
+            "hf-hub:timm/vit_pe_core_large_patch14_336.fb",
+            "vit_large_patch14_336",
+        ]
+        for name in candidate_names:
+            try:
+                backbone = timm.create_model(name, pretrained=True, dynamic_img_size=dynamic_img_size)
+                break
+            except Exception:
+                try:
+                    backbone = timm.create_model(name, pretrained=False, dynamic_img_size=dynamic_img_size)
+                    break
+                except Exception:
+                    continue
 
+        if backbone is None:
+            raise ValueError(f"Could not load any timm architecture for '{model_name}'")
+
+        self.backbone = backbone
         data_config = timm.data.resolve_model_data_config(self.backbone)
         if img_size is not None:
             data_config["input_size"] = (3, img_size, img_size)
