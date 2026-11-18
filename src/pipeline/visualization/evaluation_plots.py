@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 from typing import List, Optional
-from sklearn.metrics import roc_curve, precision_recall_curve
+from sklearn.metrics import roc_curve, roc_auc_score, precision_recall_curve
 
 def plot_roc_curve(y_true: List[int], y_scores: List[float], title: str, save_path: Optional[str] = None) -> None:
     """Plot Receiver Operating Characteristic (ROC) curve."""
@@ -63,5 +63,60 @@ def plot_similarity_distributions(
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
         plt.close()
+    else:
+        plt.show()
+
+def plot_gend_evaluation(
+    y_true: List[int],
+    y_scores: List[float],
+    title: str = "Stage 3: GenD Deepfake Detection Evaluation",
+    threshold: float = 0.50,
+    save_path: Optional[str] = None
+) -> None:
+    """Generate a 2-panel supervisor evaluation report: Score Distribution + ROC Curve."""
+    if len(y_true) == 0 or len(y_scores) == 0:
+        return
+
+    scores = np.array(y_scores)
+    labels = np.array(y_true)
+
+    real_scores = scores[labels == 0]
+    fake_scores = scores[labels == 1]
+
+    auc = float(roc_auc_score(labels, scores)) if len(set(labels)) > 1 else 0.0
+    fpr, tpr, _ = roc_curve(labels, scores) if len(set(labels)) > 1 else ([0, 1], [0, 1], None)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5.5), dpi=150)
+
+    # Panel 1: Prediction Probabilities Histogram
+    if len(real_scores) > 0:
+        ax1.hist(real_scores, bins=25, alpha=0.6, color="green", label=f"Real Videos (N={len(real_scores)})", density=True)
+    if len(fake_scores) > 0:
+        ax1.hist(fake_scores, bins=25, alpha=0.6, color="red", label=f"Manipulated Videos (N={len(fake_scores)})", density=True)
+    ax1.axvline(threshold, color="black", linestyle="--", lw=2, label=f"Threshold ({threshold:.2f})")
+    ax1.set_xlabel("Predicted Probability p(Fake)", fontsize=11)
+    ax1.set_ylabel("Density", fontsize=11)
+    ax1.set_title("Manipulation Probability Distribution", fontsize=12, fontweight="bold")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    # Panel 2: ROC Curve
+    ax2.plot(fpr, tpr, color="darkorange", lw=2.5, label=f"ROC Curve (AUC = {auc:.4f})")
+    ax2.plot([0, 1], [0, 1], color="navy", lw=1.5, linestyle="--", label="Chance")
+    ax2.set_xlim([0.0, 1.0])
+    ax2.set_ylim([0.0, 1.02])
+    ax2.set_xlabel("False Positive Rate (FPR)", fontsize=11)
+    ax2.set_ylabel("True Positive Rate (TPR)", fontsize=11)
+    ax2.set_title(f"GenD ROC Curve (AUC = {auc:.4f})", fontsize=12, fontweight="bold")
+    ax2.legend(loc="lower right")
+    ax2.grid(True, alpha=0.3)
+
+    fig.suptitle(title, fontsize=13, fontweight="bold", y=1.02)
+    plt.tight_layout()
+
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, bbox_inches="tight")
+        plt.close(fig)
     else:
         plt.show()

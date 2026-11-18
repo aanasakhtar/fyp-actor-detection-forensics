@@ -23,22 +23,54 @@ class BaseGenDDetector:
         self.decision_threshold = decision_threshold
         self.model = None
         self.processor = None
+        self.pipeline = None
         self._init_model()
         
     def _init_model(self) -> None:
         """Load the GenD model weights from Hugging Face or local checkpoint."""
         logger.info(f"Loading GenD model from '{self.repo_id}' onto {self.device}...")
+        self.pipeline = None
+
+        # 1. Try high-level Hugging Face pipeline
         try:
-            import torch
+            from transformers import pipeline
+            device_arg = 0 if str(self.device).startswith("cuda") else -1
+            self.pipeline = pipeline(
+                "image-classification", 
+                model=self.repo_id, 
+                device=device_arg,
+                trust_remote_code=True
+            )
+            logger.info(f"Successfully loaded {self.repo_id} via HuggingFace pipeline.")
+            return
+        except Exception as e1:
+            logger.debug(f"Pipeline loading failed ({e1}), attempting AutoModelForImageClassification...")
+
+        # 2. Try AutoModelForImageClassification with trust_remote_code
+        try:
             from transformers import AutoModelForImageClassification, AutoImageProcessor
-            self.processor = AutoImageProcessor.from_pretrained(self.repo_id)
-            self.model = AutoModelForImageClassification.from_pretrained(self.repo_id)
+            self.processor = AutoImageProcessor.from_pretrained(self.repo_id, trust_remote_code=True)
+            self.model = AutoModelForImageClassification.from_pretrained(self.repo_id, trust_remote_code=True)
             self.model.to(self.device)
             self.model.eval()
-            logger.info(f"Successfully loaded {self.repo_id}")
-        except Exception as e:
-            logger.warning(f"AutoModel loading for {self.repo_id} unavailable ({e}). Fallback mode active.")
+            logger.info(f"Successfully loaded {self.repo_id} via AutoModelForImageClassification.")
+            return
+        except Exception as e2:
+            logger.debug(f"AutoModelForImageClassification failed ({e2}), attempting AutoModel...")
+
+        # 3. Try AutoModel with trust_remote_code
+        try:
+            from transformers import AutoModel, AutoImageProcessor
+            self.processor = AutoImageProcessor.from_pretrained(self.repo_id, trust_remote_code=True)
+            self.model = AutoModel.from_pretrained(self.repo_id, trust_remote_code=True)
+            self.model.to(self.device)
+            self.model.eval()
+            logger.info(f"Successfully loaded {self.repo_id} via AutoModel.")
+            return
+        except Exception as e3:
+            logger.warning(f"All loaders for {self.repo_id} failed: pipeline ({e1}), AutoModelClass ({e2}), AutoModel ({e3}). Fallback mode active.")
             self.model = None
+            self.processor = None
 
     def predict_crops(self, crop_images_bgr: List[np.ndarray]) -> List[float]:
         """
@@ -47,26 +79,56 @@ class BaseGenDDetector:
         """
         if not crop_images_bgr:
             return []
-            
-        if self.model is None or self.processor is None:
-            # Fallback for offline dev testing
-            return [0.0] * len(crop_images_bgr)
-            
+
         try:
             import torch
             from PIL import Image
             import cv2
-            pil_images = [Image.fromarray(cv2.cvtColor(c, cv2.COLOR_BGR2RGB)) for c in crop_images_bgr]
-            inputs = self.processor(images=pil_images, return_tensors="pt").to(self.device)
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-                logits = outputs.logits
-                probs = torch.softmax(logits, dim=-1)
-                fake_probs = probs[:, 1].detach().cpu().numpy().tolist()
-                return fake_probs
-        except Exception as e:
-            logger.error(f"Inference error in GenD: {e}")
+        except ImportError:
             return [0.0] * len(crop_images_bgr)
+
+        # 1. Pipeline inference path
+        if getattr(self, "pipeline", None) is not None:
+            try:
+                pil_images = [Image.fromarray(cv2.cvtColor(c, cv2.COLOR_BGR2RGB)) for c in crop_images_bgr]
+                results = self.pipeline(pil_images, top_k=None)
+                if isinstance(results, dict):
+                    results = [[results]]
+                elif isinstance(results, list) and results and isinstance(results[0], dict):
+                    results = [results]
+
+                fake_probs = []
+                for r in results:
+                    fake_score = 0.50
+                    for item in r:
+                        lbl = str(item.get("label", "")).lower()
+                        score = float(item.get("score", 0.0))
+                        if any(k in lbl for k in ["fake", "synth", "manip", "deepfake"]) or lbl in ["1", "label_1"]:
+                            fake_score = score
+                            break
+                        elif any(k in lbl for k in ["real", "pristine", "original"]) or lbl in ["0", "label_0"]:
+                            fake_score = 1.0 - score
+                    fake_probs.append(fake_score)
+                return fake_probs
+            except Exception as e:
+                logger.error(f"Pipeline inference failed ({e}), attempting PyTorch model...")
+
+        # 2. PyTorch model inference path
+        if self.model is not None and self.processor is not None:
+            try:
+                pil_images = [Image.fromarray(cv2.cvtColor(c, cv2.COLOR_BGR2RGB)) for c in crop_images_bgr]
+                inputs = self.processor(images=pil_images, return_tensors="pt").to(self.device)
+                with torch.no_grad():
+                    outputs = self.model(**inputs)
+                    logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
+                    probs = torch.softmax(logits, dim=-1)
+                    fake_probs = probs[:, 1].detach().cpu().numpy().tolist()
+                    return fake_probs
+            except Exception as e:
+                logger.error(f"Inference error in GenD PyTorch model: {e}")
+                return [0.0] * len(crop_images_bgr)
+
+        return [0.0] * len(crop_images_bgr)
 
     @staticmethod
     def aggregate_scores(
