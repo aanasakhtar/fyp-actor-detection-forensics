@@ -26,6 +26,8 @@ from pipeline.preprocessing.face_alignment import align_face_5point, align_face_
 from pipeline.preprocessing.face_cropping import crop_context_face
 from pipeline.recognition.arcface_encoder import ArcFaceEncoder
 from pipeline.forensics.clip_detector import GenDCLIPDetector
+from pipeline.forensics.pe_detector import GenDPEDetector
+from pipeline.forensics.dinov3_detector import GenDDINOv3Detector
 from pipeline.data.video_reader import VideoReader
 from pipeline.utils.logging import get_logger
 
@@ -232,7 +234,8 @@ def generate_audit_card(
     threshold: float,
     is_identity_match: bool,
     manipulation_prob: float,
-    save_path: str
+    save_path: str,
+    backbone_label: str = "GenD PE-L"
 ):
     """Render a 3-panel supervisor diagnostic card visualizing the marketplace decision."""
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 6.5), dpi=150)
@@ -259,7 +262,7 @@ def generate_audit_card(
     is_fake = manipulation_prob >= 0.50
     verdict_text = "UNAUTHORIZED AI DEEPFAKE" if is_fake else "VERIFIED AUTHENTIC FOOTAGE"
     verdict_color = "red" if is_fake else "green"
-    ax3.set_title(f"STAGE 3: FORENSIC MANIPULATION VERDICT\nProbability p(Fake): {manipulation_prob:.4f}\nVerdict: {verdict_text}", fontsize=11, fontweight="bold", color=verdict_color, pad=12)
+    ax3.set_title(f"STAGE 3: FORENSIC VERDICT ({backbone_label})\nProbability p(Fake): {manipulation_prob:.4f}\nVerdict: {verdict_text}", fontsize=11, fontweight="bold", color=verdict_color, pad=12)
     ax3.axis("off")
 
     # Overall Summary Banner
@@ -282,6 +285,7 @@ def main():
     parser.add_argument("--actor-image", type=str, default=None, help="Path to local image of actor for onboarding/enrollment.")
     parser.add_argument("--tmdb-api-key", type=str, default="b2b7416d572f285d036cca47fb16a1c4", help="Official TMDB API Key for multi-headshot portfolio gallery.")
     parser.add_argument("--auto-identify", action="store_true", help="Automatically identify celebrity from TMDB by scanning top actors.")
+    parser.add_argument("--gend-backbone", type=str, default="pe", choices=["pe", "clip", "dinov3"], help="GenD forensic visual encoder backbone: 'pe' (Perception Encoder - Recommended), 'clip' (OpenAI CLIP ViT-L/14), or 'dinov3' (Meta DINOv3).")
     parser.add_argument("--output-dir", type=str, default="/kaggle/working/results/marketplace_demo")
     parser.add_argument("--threshold", type=float, default=0.55, help="ArcFace cosine similarity decision threshold.")
     args = parser.parse_args()
@@ -295,7 +299,19 @@ def main():
     # 1. Initialize Pipeline Engines
     detector = SCRFDDetector(conf_threshold=0.50)
     encoder = ArcFaceEncoder()
-    gend = GenDCLIPDetector()
+    
+    if args.gend_backbone == "pe":
+        logger.info("Initializing Stage 3: GenD with Perception Encoder (PE) backbone ('yermandy/GenD_PE_L')...")
+        gend = GenDPEDetector()
+        backbone_label = "GenD PE-L"
+    elif args.gend_backbone == "dinov3":
+        logger.info("Initializing Stage 3: GenD with Meta DINOv3 backbone ('yermandy/GenD_DINOv3_L')...")
+        gend = GenDDINOv3Detector()
+        backbone_label = "GenD DINOv3-L"
+    else:
+        logger.info("Initializing Stage 3: GenD with OpenAI CLIP-L/14 backbone ('yermandy/GenD_CLIP_L_14')...")
+        gend = GenDCLIPDetector()
+        backbone_label = "GenD CLIP-L/14"
 
     # 2. Extract Primary Actor Face from Video
     logger.info(f"Ingesting monitored video: {args.video_path}")
@@ -426,7 +442,7 @@ def main():
 
     is_fake = manipulation_prob >= 0.50
     print("\n" + "-"*76)
-    print("STAGE 3: FORENSIC DEEPFAKE DETECTION (GEND CLIP-L/14)")
+    print(f"STAGE 3: FORENSIC DEEPFAKE DETECTION ({backbone_label})")
     print("-" * 76)
     print(f"Manipulation Score p(Fake):   {manipulation_prob:.4f}")
     print(f"Forensic Verdict:             {'[UNAUTHORIZED DEEPFAKE INFRINGEMENT]' if is_fake else '[VERIFIED AUTHENTIC FOOTAGE]'}")
@@ -443,7 +459,8 @@ def main():
         threshold=args.threshold,
         is_identity_match=is_match,
         manipulation_prob=manipulation_prob,
-        save_path=report_path
+        save_path=report_path,
+        backbone_label=backbone_label
     )
 
 
