@@ -287,7 +287,7 @@ def main():
     parser.add_argument("--actor-image", type=str, default=None, help="Path to local image of actor for onboarding/enrollment.")
     parser.add_argument("--tmdb-api-key", type=str, default="b2b7416d572f285d036cca47fb16a1c4", help="Official TMDB API Key for multi-headshot portfolio gallery.")
     parser.add_argument("--auto-identify", action="store_true", help="Automatically identify celebrity from TMDB by scanning top actors.")
-    parser.add_argument("--forensic-model", type=str, default="efficientnet-b4", choices=["efficientnet-b4", "sbi", "vit", "gend-pe", "gend-clip", "gend-dinov3"], help="Forensic deepfake detection model: 'efficientnet-b4' (SBI Contrastive - Recommended), 'vit' (ViT Transformer), 'gend-pe' (GenD Perception Encoder), 'gend-clip' (GenD CLIP-L/14), or 'gend-dinov3' (GenD DINOv3).")
+    parser.add_argument("--forensic-model", type=str, default="vit", choices=["vit", "efficientnet-b4", "sbi", "gend-pe", "gend-clip", "gend-dinov3"], help="Forensic deepfake detection model: 'vit' (ViT Transformer - Recommended for Celeb-DF), 'efficientnet-b4' (SBI Contrastive), 'gend-pe' (GenD Perception Encoder), 'gend-clip' (GenD CLIP-L/14), or 'gend-dinov3' (GenD DINOv3).")
     parser.add_argument("--gend-backbone", type=str, default=None, help="Legacy alias for --forensic-model (e.g. 'pe', 'clip', 'dinov3').")
     parser.add_argument("--output-dir", type=str, default="/kaggle/working/results/marketplace_demo")
     parser.add_argument("--threshold", type=float, default=0.55, help="ArcFace cosine similarity decision threshold.")
