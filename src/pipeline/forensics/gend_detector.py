@@ -52,7 +52,19 @@ class BaseGenDDetector:
                 weights_path = hf_hub_download(repo_id=self.repo_id, filename="pytorch_model.bin", token=token)
                 state_dict = torch.load(weights_path, map_location="cpu")
 
-            model.load_state_dict(state_dict, strict=False)
+            # Filter and adapt mismatched tensor shapes (e.g. mask_token dimensionality)
+            model_state = model.state_dict()
+            adapted_state_dict = {}
+            for k, v in state_dict.items():
+                if k in model_state:
+                    if v.shape == model_state[k].shape:
+                        adapted_state_dict[k] = v
+                    elif v.squeeze().shape == model_state[k].squeeze().shape:
+                        adapted_state_dict[k] = v.view_as(model_state[k])
+                else:
+                    adapted_state_dict[k] = v
+
+            model.load_state_dict(adapted_state_dict, strict=False)
             model.to(self.device)
             model.eval()
             self.model = model
