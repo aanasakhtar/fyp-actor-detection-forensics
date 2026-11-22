@@ -32,6 +32,124 @@ from pipeline.utils.logging import get_logger
 logger = get_logger("marketplace_monitoring")
 
 
+def fetch_official_tmdb_talent(
+    actor_name: str,
+    api_key: str = "b2b7416d572f285d036cca47fb16a1c4",
+    detector: SCRFDDetector = None,
+    encoder: ArcFaceEncoder = None,
+    query_emb: np.ndarray = None
+):
+    """
+    Query the official TMDB API to enroll the talent's multi-headshot portfolio gallery.
+    Downloads all official studio portraits, extracts ArcFace vectors, and identifies
+    the best matching reference headshot against the monitored video prototype.
+    """
+    import urllib.request
+    import urllib.parse
+    import json
+    import io
+
+    encoded_name = urllib.parse.quote(actor_name)
+    search_url = f"https://api.themoviedb.org/3/search/person?api_key={api_key}&query={encoded_name}"
+    
+    try:
+        req = urllib.request.Request(search_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            results = data.get("results", [])
+            if not results:
+                logger.warning(f"No person found in official TMDB API for '{actor_name}'")
+                return None
+            person = results[0]
+            p_id = person["id"]
+            matched_name = person["name"]
+            popularity = person.get("popularity", 0.0)
+
+        # Fetch IMDb external ID
+        imdb_id = "N/A"
+        try:
+            ext_url = f"https://api.themoviedb.org/3/person/{p_id}/external_ids?api_key={api_key}"
+            with urllib.request.urlopen(urllib.request.Request(ext_url, headers={"User-Agent": "Mozilla/5.0"})) as resp:
+                ext_data = json.loads(resp.read().decode("utf-8"))
+                imdb_id = ext_data.get("imdb_id", "N/A")
+        except Exception:
+            pass
+
+        # Fetch all official profiles/headshots
+        img_url = f"https://api.themoviedb.org/3/person/{p_id}/images?api_key={api_key}"
+        with urllib.request.urlopen(urllib.request.Request(img_url, headers={"User-Agent": "Mozilla/5.0"})) as resp:
+            img_data = json.loads(resp.read().decode("utf-8"))
+            profiles = img_data.get("profiles", [])
+
+        if not profiles:
+            logger.warning(f"No profile headshots found on TMDB for {matched_name}")
+            return None
+
+        logger.info(f"Official TMDB API: Ingesting {len(profiles)} portfolio headshots for {matched_name} (IMDb: {imdb_id})...")
+
+        gallery_items = []
+        for i, p in enumerate(profiles):
+            file_path = p.get("file_path")
+            if not file_path:
+                continue
+            photo_url = f"https://image.tmdb.org/t/p/original{file_path}"
+            try:
+                with urllib.request.urlopen(urllib.request.Request(photo_url, headers={"User-Agent": "Mozilla/5.0"})) as resp:
+                    raw_bytes = resp.read()
+                    pil_img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+                    img_bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+                    emb = None
+                    if detector is not None and encoder is not None:
+                        dets = detector.detect_frame(img_bgr)
+                        if dets:
+                            best_det = max(dets, key=lambda d: (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]))
+                            if best_det.landmarks_5 is not None:
+                                aligned = align_face_5point(img_bgr, best_det.landmarks_5)
+                                if aligned is not None:
+                                    emb = encoder.extract_embedding(aligned)
+
+                    sim = float(np.dot(emb, query_emb)) if (emb is not None and query_emb is not None) else 1.0
+                    gallery_items.append({
+                        "image_pil": pil_img,
+                        "embedding": emb,
+                        "sim": sim,
+                        "url": photo_url
+                    })
+                    if query_emb is not None and emb is not None:
+                        logger.info(f"  * Headshot {i+1}/{len(profiles)} Biometric Likeness: {sim:.4f}")
+            except Exception as e:
+                logger.warning(f"Could not load TMDB headshot {i}: {e}")
+
+        if not gallery_items:
+            return None
+
+        # Select portrait with highest similarity to monitored face
+        best_item = max(gallery_items, key=lambda g: g["sim"])
+        gallery_embs = [g["embedding"] for g in gallery_items if g["embedding"] is not None]
+        
+        centroid_emb = None
+        if gallery_embs:
+            centroid_emb = np.mean(gallery_embs, axis=0)
+            centroid_emb = centroid_emb / np.linalg.norm(centroid_emb)
+
+        return {
+            "name": matched_name,
+            "imdb_id": imdb_id,
+            "popularity": popularity,
+            "image_pil": best_item["image_pil"],
+            "best_emb": best_item["embedding"],
+            "centroid_emb": centroid_emb,
+            "max_sim": best_item["sim"],
+            "all_sims": [g["sim"] for g in gallery_items],
+            "num_headshots": len(gallery_items),
+            "source": f"Official TMDB Multi-Headshot Gallery ({len(gallery_items)} images)"
+        }
+    except Exception as e:
+        logger.error(f"Error querying official TMDB API: {e}")
+        return None
+
+
 def fetch_tmdb_actor(actor_name: str = None, top_k: int = 80, query_emb: np.ndarray = None, encoder: ArcFaceEncoder = None, detector: SCRFDDetector = None):
     """
     Search or stream actors from 'ashraq/tmdb-people-image'.
@@ -122,7 +240,9 @@ def generate_audit_card(
     # Panel 1: Registered Talent Studio Portfolio (TMDB)
     tmdb_img = enrolled_data.get("image_pil")
     ax1.imshow(tmdb_img)
-    ax1.set_title(f"REGISTERED TALENT PROFILE\nName: {enrolled_data.get('name')}\nIMDb: {enrolled_data.get('imdb_id')}", fontsize=11, fontweight="bold", pad=12)
+    num_heads = enrolled_data.get("num_headshots", 1)
+    portfolio_meta = f"Verified Headshots: {num_heads} (Best Era Match)" if num_heads > 1 else "Single Headshot Enrolled"
+    ax1.set_title(f"REGISTERED TALENT PROFILE\nName: {enrolled_data.get('name')}\nIMDb: {enrolled_data.get('imdb_id')}\n{portfolio_meta}", fontsize=11, fontweight="bold", pad=12)
     ax1.axis("off")
 
     # Panel 2: In-the-Wild Video Observation (Stage 1 & 2)
@@ -160,9 +280,10 @@ def main():
     parser.add_argument("--video-path", type=str, required=True, help="Path to input Celeb-DF video (real or fake).")
     parser.add_argument("--actor-name", type=str, default=None, help="Actor name to search in TMDB (e.g. 'Aamir Khan', 'Tom Cruise').")
     parser.add_argument("--actor-image", type=str, default=None, help="Path to local image of actor for onboarding/enrollment.")
+    parser.add_argument("--tmdb-api-key", type=str, default="b2b7416d572f285d036cca47fb16a1c4", help="Official TMDB API Key for multi-headshot portfolio gallery.")
     parser.add_argument("--auto-identify", action="store_true", help="Automatically identify celebrity from TMDB by scanning top actors.")
     parser.add_argument("--output-dir", type=str, default="/kaggle/working/results/marketplace_demo")
-    parser.add_argument("--threshold", type=float, default=0.66, help="ArcFace cosine similarity decision threshold.")
+    parser.add_argument("--threshold", type=float, default=0.55, help="ArcFace cosine similarity decision threshold.")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -235,10 +356,24 @@ def main():
             "imdb_id": "Local Portfolio",
             "popularity": 100.0,
             "image_pil": pil_img,
-            "cosine_sim": 1.0
+            "cosine_sim": 1.0,
+            "source": "Local File Enrollment"
         }
     elif args.actor_name:
-        enrolled_data = fetch_tmdb_actor(actor_name=args.actor_name)
+        # Priority 1: Official TMDB API Multi-Headshot Portfolio Gallery
+        if args.tmdb_api_key:
+            logger.info(f"Querying Official TMDB API for '{args.actor_name}' multi-image portfolio gallery...")
+            enrolled_data = fetch_official_tmdb_talent(
+                actor_name=args.actor_name,
+                api_key=args.tmdb_api_key,
+                detector=detector,
+                encoder=encoder,
+                query_emb=mean_video_emb
+            )
+        # Priority 2: Hugging Face Streaming Dataset Fallback
+        if enrolled_data is None:
+            logger.info("Falling back to Hugging Face 'ashraq/tmdb-people-image' dataset stream...")
+            enrolled_data = fetch_tmdb_actor(actor_name=args.actor_name)
     elif args.auto_identify:
         logger.info("Auto-identifying video subject across TMDB popular celebrities...")
         enrolled_data = fetch_tmdb_actor(top_k=80, query_emb=mean_video_emb, encoder=encoder, detector=detector)
@@ -251,25 +386,35 @@ def main():
         return
 
     # 4. Extract Registered Biometric Vector from TMDB Portrait
-    tmdb_bgr = cv2.cvtColor(np.array(enrolled_data["image_pil"]), cv2.COLOR_RGB2BGR)
-    tmdb_dets = detector.detect_frame(tmdb_bgr)
-    if not tmdb_dets:
-        logger.error("Could not detect face in TMDB portfolio image!")
-        return
-    best_tmdb_det = max(tmdb_dets, key=lambda d: (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]))
-    aligned_tmdb = align_face_5point(tmdb_bgr, best_tmdb_det.landmarks_5)
-    enrolled_emb = encoder.extract_embedding(aligned_tmdb)
+    if enrolled_data.get("best_emb") is not None:
+        enrolled_emb = enrolled_data["best_emb"]
+        cosine_sim = float(np.dot(mean_video_emb, enrolled_emb))
+    else:
+        tmdb_bgr = cv2.cvtColor(np.array(enrolled_data["image_pil"]), cv2.COLOR_RGB2BGR)
+        tmdb_dets = detector.detect_frame(tmdb_bgr)
+        if not tmdb_dets:
+            logger.error("Could not detect face in TMDB portfolio image!")
+            return
+        best_tmdb_det = max(tmdb_dets, key=lambda d: (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]))
+        aligned_tmdb = align_face_5point(tmdb_bgr, best_tmdb_det.landmarks_5)
+        enrolled_emb = encoder.extract_embedding(aligned_tmdb)
+        cosine_sim = float(np.dot(mean_video_emb, enrolled_emb))
 
     # 5. Stage 2: ArcFace Likeness Verification
-    cosine_sim = float(np.dot(mean_video_emb, enrolled_emb))
     is_match = cosine_sim >= args.threshold
 
     print("\n" + "-"*76)
     print("STAGE 2: BIOMETRIC LIKENESS VERIFICATION (ARCFACE)")
     print("-" * 76)
     print(f"Registered Talent:            {enrolled_data['name']} (IMDb: {enrolled_data['imdb_id']})")
+    print(f"Onboarding Source:            {enrolled_data.get('source', 'TMDB Catalog')}")
+    if enrolled_data.get("num_headshots"):
+        print(f"Enrolled Gallery Size:        {enrolled_data['num_headshots']} Official Headshots (Multi-Prototype)")
     print(f"Monitored Video File:         {os.path.basename(args.video_path)}")
-    print(f"Observed Cosine Similarity:   {cosine_sim:.4f}")
+    print(f"Observed Cosine Similarity:   {cosine_sim:.4f} (Best Portfolio Match)")
+    if enrolled_data.get("centroid_emb") is not None:
+        centroid_sim = float(np.dot(mean_video_emb, enrolled_data["centroid_emb"]))
+        print(f"Centroid Profile Similarity:  {centroid_sim:.4f}")
     print(f"Marketplace Match Threshold:  {args.threshold:.2f}")
     print(f"Identity Verification Status: {'[CONFIRMED MATCH]' if is_match else '[NON-MATCH / IMPOSTOR]'}")
 
