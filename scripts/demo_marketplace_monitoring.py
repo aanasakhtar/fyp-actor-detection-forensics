@@ -22,7 +22,7 @@ if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
 from pipeline.detection.scrfd_detector import SCRFDDetector
-from pipeline.preprocessing.face_alignment import align_face_5point
+from pipeline.preprocessing.face_alignment import align_face_5point, align_face_gend
 from pipeline.preprocessing.face_cropping import crop_context_face
 from pipeline.recognition.arcface_encoder import ArcFaceEncoder
 from pipeline.forensics.clip_detector import GenDCLIPDetector
@@ -58,19 +58,22 @@ def fetch_tmdb_actor(actor_name: str = None, top_k: int = 80, query_emb: np.ndar
         pop = float(entry.get("popularity", 0.0))
         img = entry.get("image")
 
-        if dept != "Acting" and pop < 10.0:
+        # Case A: Exact or partial name search
+        if actor_name:
+            if actor_name.lower() in name.lower():
+                logger.info(f"Found requested actor in TMDB: {name} (Popularity: {pop:.1f}, IMDb: {entry.get('imdb_id')})")
+                return {
+                    "name": name,
+                    "imdb_id": entry.get("imdb_id", "N/A"),
+                    "popularity": pop,
+                    "image_pil": img,
+                    "cosine_sim": 1.0
+                }
             continue
 
-        # Case A: Exact or partial name search
-        if actor_name and actor_name.lower() in name.lower():
-            logger.info(f"Found requested actor: {name} (Popularity: {pop:.1f}, IMDb: {entry.get('imdb_id')})")
-            return {
-                "name": name,
-                "imdb_id": entry.get("imdb_id", "N/A"),
-                "popularity": pop,
-                "image_pil": img,
-                "cosine_sim": 1.0
-            }
+        # Quality filter for auto-identification across candidate stream
+        if dept != "Acting" and pop < 10.0:
+            continue
 
         # Case B: Biometric cross-matching against query video face embedding
         if query_emb is not None and detector is not None and encoder is not None:
@@ -155,7 +158,8 @@ def generate_audit_card(
 def main():
     parser = argparse.ArgumentParser(description="End-to-End Talent Marketplace Demo.")
     parser.add_argument("--video-path", type=str, required=True, help="Path to input Celeb-DF video (real or fake).")
-    parser.add_argument("--actor-name", type=str, default=None, help="Actor name to search in TMDB (e.g. 'Tom Cruise', 'Will Smith').")
+    parser.add_argument("--actor-name", type=str, default=None, help="Actor name to search in TMDB (e.g. 'Aamir Khan', 'Tom Cruise').")
+    parser.add_argument("--actor-image", type=str, default=None, help="Path to local image of actor for onboarding/enrollment.")
     parser.add_argument("--auto-identify", action="store_true", help="Automatically identify celebrity from TMDB by scanning top actors.")
     parser.add_argument("--output-dir", type=str, default="/kaggle/working/results/marketplace_demo")
     parser.add_argument("--threshold", type=float, default=0.66, help="ArcFace cosine similarity decision threshold.")
@@ -196,16 +200,21 @@ def main():
                     emb = encoder.extract_embedding(aligned)
                     if emb is not None:
                         video_embs.append(emb)
-                        crop = crop_context_face(f.image_bgr, primary.bbox)
-                        if crop is not None:
-                            video_crops.append(crop)
+                        
+                        # GenD Canonical 5-point alignment (WACV 2026)
+                        gend_crop = align_face_gend(f.image_bgr, primary.landmarks_5, target_size=(224, 224), scale=1.30)
+                        if gend_crop is None:
+                            gend_crop = crop_context_face(f.image_bgr, primary.bbox)
+                        if gend_crop is not None:
+                            video_crops.append(gend_crop)
+                            
                         if representative_frame is None:
                             # Annotate representative frame
                             vis_frame = f.image_bgr.copy()
                             bx = primary.bbox.astype(int)
                             cv2.rectangle(vis_frame, (bx[0], bx[1]), (bx[2], bx[3]), (0, 255, 0), 2)
                             representative_frame = vis_frame
-                            representative_crop = crop
+                            representative_crop = gend_crop
 
     if not video_embs:
         logger.error("No valid faces detected in video!")
@@ -215,9 +224,20 @@ def main():
     mean_video_emb = np.mean(np.array(video_embs), axis=0)
     mean_video_emb = mean_video_emb / np.linalg.norm(mean_video_emb)
 
-    # 3. Fetch Registered Actor Portfolio from TMDB
+    # 3. Fetch Registered Actor Portfolio
     enrolled_data = None
-    if args.actor_name:
+    if args.actor_image and os.path.exists(args.actor_image):
+        logger.info(f"Enrolling talent from local portfolio image: {args.actor_image}")
+        pil_img = Image.open(args.actor_image).convert("RGB")
+        name = args.actor_name if args.actor_name else os.path.splitext(os.path.basename(args.actor_image))[0]
+        enrolled_data = {
+            "name": name,
+            "imdb_id": "Local Portfolio",
+            "popularity": 100.0,
+            "image_pil": pil_img,
+            "cosine_sim": 1.0
+        }
+    elif args.actor_name:
         enrolled_data = fetch_tmdb_actor(actor_name=args.actor_name)
     elif args.auto_identify:
         logger.info("Auto-identifying video subject across TMDB popular celebrities...")
