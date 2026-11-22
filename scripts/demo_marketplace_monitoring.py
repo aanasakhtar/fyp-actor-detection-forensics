@@ -28,6 +28,8 @@ from pipeline.recognition.arcface_encoder import ArcFaceEncoder
 from pipeline.forensics.clip_detector import GenDCLIPDetector
 from pipeline.forensics.pe_detector import GenDPEDetector
 from pipeline.forensics.dinov3_detector import GenDDINOv3Detector
+from pipeline.forensics.sbi_detector import SBIEfficientNetDetector
+from pipeline.forensics.vit_detector import ViTDeepfakeDetector
 from pipeline.data.video_reader import VideoReader
 from pipeline.utils.logging import get_logger
 
@@ -285,7 +287,8 @@ def main():
     parser.add_argument("--actor-image", type=str, default=None, help="Path to local image of actor for onboarding/enrollment.")
     parser.add_argument("--tmdb-api-key", type=str, default="b2b7416d572f285d036cca47fb16a1c4", help="Official TMDB API Key for multi-headshot portfolio gallery.")
     parser.add_argument("--auto-identify", action="store_true", help="Automatically identify celebrity from TMDB by scanning top actors.")
-    parser.add_argument("--gend-backbone", type=str, default="pe", choices=["pe", "clip", "dinov3"], help="GenD forensic visual encoder backbone: 'pe' (Perception Encoder - Recommended), 'clip' (OpenAI CLIP ViT-L/14), or 'dinov3' (Meta DINOv3).")
+    parser.add_argument("--forensic-model", type=str, default="efficientnet-b4", choices=["efficientnet-b4", "sbi", "vit", "gend-pe", "gend-clip", "gend-dinov3"], help="Forensic deepfake detection model: 'efficientnet-b4' (SBI Contrastive - Recommended), 'vit' (ViT Transformer), 'gend-pe' (GenD Perception Encoder), 'gend-clip' (GenD CLIP-L/14), or 'gend-dinov3' (GenD DINOv3).")
+    parser.add_argument("--gend-backbone", type=str, default=None, help="Legacy alias for --forensic-model (e.g. 'pe', 'clip', 'dinov3').")
     parser.add_argument("--output-dir", type=str, default="/kaggle/working/results/marketplace_demo")
     parser.add_argument("--threshold", type=float, default=0.55, help="ArcFace cosine similarity decision threshold.")
     args = parser.parse_args()
@@ -299,19 +302,37 @@ def main():
     # 1. Initialize Pipeline Engines
     detector = SCRFDDetector(conf_threshold=0.50)
     encoder = ArcFaceEncoder()
-    
-    if args.gend_backbone == "pe":
-        logger.info("Initializing Stage 3: GenD with Perception Encoder (PE) backbone ('yermandy/GenD_PE_L')...")
-        gend = GenDPEDetector()
-        backbone_label = "GenD PE-L"
-    elif args.gend_backbone == "dinov3":
-        logger.info("Initializing Stage 3: GenD with Meta DINOv3 backbone ('yermandy/GenD_DINOv3_L')...")
-        gend = GenDDINOv3Detector()
-        backbone_label = "GenD DINOv3-L"
+
+    # Resolve forensic detector choice
+    model_choice = args.forensic_model.lower()
+    if args.gend_backbone is not None:
+        model_choice = f"gend-{args.gend_backbone.lower()}"
+
+    if model_choice in ["efficientnet-b4", "sbi", "efficientnet"]:
+        logger.info("Initializing Stage 3: SBI Contrastive EfficientNet-B4 ('nikokons/contrastive-deepfake-detector')...")
+        forensic_detector = SBIEfficientNetDetector()
+        forensic_label = "SBI EfficientNet-B4"
+        crop_target_size = (380, 380)
+    elif model_choice in ["vit", "vit-base"]:
+        logger.info("Initializing Stage 3: ViT Forensics ('dima806/deepfake_vs_real_image_detection')...")
+        forensic_detector = ViTDeepfakeDetector()
+        forensic_label = "ViT Deepfake Detector"
+        crop_target_size = (224, 224)
+    elif model_choice in ["gend-pe", "pe"]:
+        logger.info("Initializing Stage 3: GenD with Perception Encoder ('yermandy/GenD_PE_L')...")
+        forensic_detector = GenDPEDetector()
+        forensic_label = "GenD PE-L"
+        crop_target_size = (224, 224)
+    elif model_choice in ["gend-dinov3", "dinov3"]:
+        logger.info("Initializing Stage 3: GenD with Meta DINOv3 ('yermandy/GenD_DINOv3_L')...")
+        forensic_detector = GenDDINOv3Detector()
+        forensic_label = "GenD DINOv3-L"
+        crop_target_size = (224, 224)
     else:
-        logger.info("Initializing Stage 3: GenD with OpenAI CLIP-L/14 backbone ('yermandy/GenD_CLIP_L_14')...")
-        gend = GenDCLIPDetector()
-        backbone_label = "GenD CLIP-L/14"
+        logger.info("Initializing Stage 3: GenD with OpenAI CLIP-L/14 ('yermandy/GenD_CLIP_L_14')...")
+        forensic_detector = GenDCLIPDetector()
+        forensic_label = "GenD CLIP-L/14"
+        crop_target_size = (224, 224)
 
     # 2. Extract Primary Actor Face from Video
     logger.info(f"Ingesting monitored video: {args.video_path}")
@@ -338,12 +359,12 @@ def main():
                     if emb is not None:
                         video_embs.append(emb)
                         
-                        # GenD Canonical 5-point alignment (WACV 2026)
-                        gend_crop = align_face_gend(f.image_bgr, primary.landmarks_5, target_size=(224, 224), scale=1.30)
-                        if gend_crop is None:
-                            gend_crop = crop_context_face(f.image_bgr, primary.bbox)
-                        if gend_crop is not None:
-                            video_crops.append(gend_crop)
+                        # Model-specific alignment and resolution (380x380 for SBI EfficientNet-B4, 224x224 for GenD/ViT)
+                        forensic_crop = align_face_gend(f.image_bgr, primary.landmarks_5, target_size=crop_target_size, scale=1.30)
+                        if forensic_crop is None:
+                            forensic_crop = crop_context_face(f.image_bgr, primary.bbox, target_size=crop_target_size)
+                        if forensic_crop is not None:
+                            video_crops.append(forensic_crop)
                             
                         if representative_frame is None:
                             # Annotate representative frame
@@ -351,7 +372,7 @@ def main():
                             bx = primary.bbox.astype(int)
                             cv2.rectangle(vis_frame, (bx[0], bx[1]), (bx[2], bx[3]), (0, 255, 0), 2)
                             representative_frame = vis_frame
-                            representative_crop = gend_crop
+                            representative_crop = forensic_crop
 
     if not video_embs:
         logger.error("No valid faces detected in video!")
@@ -393,9 +414,30 @@ def main():
     elif args.auto_identify:
         logger.info("Auto-identifying video subject across TMDB popular celebrities...")
         enrolled_data = fetch_tmdb_actor(top_k=80, query_emb=mean_video_emb, encoder=encoder, detector=detector)
+        if enrolled_data and args.tmdb_api_key:
+            logger.info(f"Auto-identified '{enrolled_data['name']}'. Fetching official TMDB multi-headshot gallery...")
+            official_data = fetch_official_tmdb_talent(
+                actor_name=enrolled_data["name"],
+                api_key=args.tmdb_api_key,
+                detector=detector,
+                encoder=encoder,
+                query_emb=mean_video_emb
+            )
+            if official_data:
+                enrolled_data = official_data
     else:
         # Default fallback: scan top TMDB actors
         enrolled_data = fetch_tmdb_actor(top_k=60, query_emb=mean_video_emb, encoder=encoder, detector=detector)
+        if enrolled_data and args.tmdb_api_key:
+            official_data = fetch_official_tmdb_talent(
+                actor_name=enrolled_data["name"],
+                api_key=args.tmdb_api_key,
+                detector=detector,
+                encoder=encoder,
+                query_emb=mean_video_emb
+            )
+            if official_data:
+                enrolled_data = official_data
 
     if not enrolled_data:
         logger.error("Could not find matching actor profile in TMDB dataset.")
@@ -434,15 +476,15 @@ def main():
     print(f"Marketplace Match Threshold:  {args.threshold:.2f}")
     print(f"Identity Verification Status: {'[CONFIRMED MATCH]' if is_match else '[NON-MATCH / IMPOSTOR]'}")
 
-    # 6. Stage 3: GenD Manipulation Forensics
+    # 6. Stage 3: Forensic Manipulation Assessment
     manipulation_prob = 0.0
     if video_crops:
-        frame_scores = gend.predict_crops(video_crops)
-        manipulation_prob = gend.aggregate_scores(frame_scores)
+        frame_scores = forensic_detector.predict_crops(video_crops)
+        manipulation_prob = forensic_detector.aggregate_scores(frame_scores)
 
     is_fake = manipulation_prob >= 0.50
     print("\n" + "-"*76)
-    print(f"STAGE 3: FORENSIC DEEPFAKE DETECTION ({backbone_label})")
+    print(f"STAGE 3: FORENSIC DEEPFAKE DETECTION ({forensic_label})")
     print("-" * 76)
     print(f"Manipulation Score p(Fake):   {manipulation_prob:.4f}")
     print(f"Forensic Verdict:             {'[UNAUTHORIZED DEEPFAKE INFRINGEMENT]' if is_fake else '[VERIFIED AUTHENTIC FOOTAGE]'}")
@@ -460,7 +502,7 @@ def main():
         is_identity_match=is_match,
         manipulation_prob=manipulation_prob,
         save_path=report_path,
-        backbone_label=backbone_label
+        backbone_label=forensic_label
     )
 
 

@@ -58,3 +58,11 @@ def test_detection_metrics_and_geometry():
     # Geometric validity
     valid = compute_landmark_geometric_validity(kps, box1)
     assert valid is True
+
+
+def test_sbi_detector_interface():
+    from pipeline.forensics.sbi_detector import SBIEfficientNetDetector
+    scores = [0.05, 0.08, 0.12, 0.10, 0.95]
+    agg = SBIEfficientNetDetector.aggregate_scores(scores, method="trimmed_mean", trim_ratio=0.20)
+    assert agg < 0.20
+
