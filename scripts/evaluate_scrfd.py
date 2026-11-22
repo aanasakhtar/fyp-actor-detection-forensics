@@ -1,6 +1,9 @@
 """
 Comprehensive evaluation script to isolate and benchmark SCRFD face detection
 across FaceForensics++ and Celeb-DF datasets.
+Supports loading pre-computed detection caches (from scripts/run_scrfd.py)
+for instant results without re-running redundant inference.
+
 Evaluates:
   1. Face Acquisition Rate (Coverage % overall and per manipulation category)
   2. Detection Confidence Distribution (p_det)
@@ -15,8 +18,9 @@ import os
 import sys
 import time
 import json
+import glob
 import argparse
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import numpy as np
 
 # Ensure local 'src' directory takes priority in sys.path
@@ -40,14 +44,43 @@ from pipeline.utils.logging import get_logger
 logger = get_logger("evaluate_scrfd")
 
 
+def load_cached_video_detections(cache_dir: Optional[str], meta) -> Optional[List[Dict[str, Any]]]:
+    """Check if precomputed SCRFD detection JSON exists for this video."""
+    if not cache_dir or not os.path.exists(cache_dir):
+        return None
+    
+    # 1. Direct exact filename: {category}_{video_id}_detections.json
+    direct_path = os.path.join(cache_dir, f"{meta.category}_{meta.video_id}_detections.json")
+    if os.path.exists(direct_path):
+        try:
+            with open(direct_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("detections", [])
+        except Exception:
+            pass
+
+    # 2. Match by video_id
+    matches = glob.glob(os.path.join(cache_dir, f"*{meta.video_id}*.json"))
+    if matches:
+        try:
+            with open(matches[0], "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("detections", [])
+        except Exception:
+            pass
+
+    return None
+
+
 def evaluate_dataset(
     data_dir: str, 
     detector: SCRFDDetector, 
     dataset_name: str, 
+    cache_dir: Optional[str] = None,
     max_frames: int = 16,
-    max_videos: int = None
+    max_videos: Optional[int] = None
 ) -> Dict[str, Any]:
-    """Isolate face detection metrics for a single dataset directory."""
+    """Isolate face detection metrics for a single dataset directory, using cache where available."""
     if not os.path.exists(data_dir) or not os.listdir(data_dir):
         logger.warning(f"Dataset path '{data_dir}' does not exist or is empty. Skipping.")
         return {}
@@ -79,12 +112,58 @@ def evaluate_dataset(
     category_covered: Dict[str, int] = {}
 
     start_time = time.time()
+    cache_hits = 0
+
+    if cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
 
     for idx, meta in enumerate(videos):
         cat = meta.category
         category_frames.setdefault(cat, 0)
         category_covered.setdefault(cat, 0)
 
+        # 1. Try loading from cache
+        cached_dets = load_cached_video_detections(cache_dir, meta)
+        if cached_dets is not None:
+            cache_hits += 1
+            frames_map: Dict[int, List[Dict[str, Any]]] = {}
+            for d in cached_dets:
+                f_idx = d.get("frame_index", 0)
+                frames_map.setdefault(f_idx, []).append(d)
+
+            # Determine number of sampled frames in this video
+            num_frames = max(len(frames_map), min(max_frames, len(frames_map) if frames_map else max_frames))
+            total_frames += num_frames
+            category_frames[cat] += num_frames
+
+            prev_primary_bbox = None
+            for f_idx, d_list in sorted(frames_map.items()):
+                if d_list:
+                    frames_with_face += 1
+                    category_covered[cat] += 1
+                    if len(d_list) > 1:
+                        multi_face_frames += 1
+
+                    primary = max(d_list, key=lambda x: (x["bbox"][2] - x["bbox"][0]) * (x["bbox"][3] - x["bbox"][1]))
+                    primary_bbox = np.array(primary["bbox"], dtype=np.float32)
+
+                    if prev_primary_bbox is not None:
+                        ious.append(compute_bbox_iou(prev_primary_bbox, primary_bbox))
+                    prev_primary_bbox = primary_bbox
+
+                    for d in d_list:
+                        total_faces_detected += 1
+                        conf = float(d.get("confidence", 1.0))
+                        confidences.append(conf)
+                        kps = d.get("landmarks_5")
+                        if kps is not None:
+                            kps_arr = np.array(kps, dtype=np.float32)
+                            ipds.append(compute_inter_pupillary_distance(kps_arr))
+                            if compute_landmark_geometric_validity(kps_arr, primary_bbox):
+                                landmark_valid_count += 1
+            continue
+
+        # 2. If not cached, run video decoding & detector
         try:
             reader = VideoReader(meta.video_path)
             frames = reader.sample_uniform(max_frames=max_frames)
@@ -92,6 +171,7 @@ def evaluate_dataset(
                 continue
 
             prev_primary_bbox = None
+            video_dets_to_cache = []
 
             for frame in frames:
                 total_frames += 1
@@ -105,31 +185,55 @@ def evaluate_dataset(
                     if len(dets) > 1:
                         multi_face_frames += 1
 
-                    # Primary face is the largest bounding box (foreground actor)
+                    # Primary face is largest area
                     primary_det = max(dets, key=lambda d: (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]))
 
-                    # Temporal tracking IoU stability against previous frame
                     if prev_primary_bbox is not None:
-                        iou_val = compute_bbox_iou(prev_primary_bbox, primary_det.bbox)
-                        ious.append(iou_val)
+                        ious.append(compute_bbox_iou(prev_primary_bbox, primary_det.bbox))
                     prev_primary_bbox = primary_det.bbox
 
                     for d in dets:
                         total_faces_detected += 1
                         confidences.append(float(d.confidence))
-                        if d.landmarks_5 is not None:
-                            ipd = compute_inter_pupillary_distance(d.landmarks_5)
+                        kps = d.landmarks_5
+                        if kps is not None:
+                            ipd = compute_inter_pupillary_distance(kps)
                             ipds.append(ipd)
-                            if compute_landmark_geometric_validity(d.landmarks_5, d.bbox):
+                            if compute_landmark_geometric_validity(kps, d.bbox):
                                 landmark_valid_count += 1
+                        
+                        video_dets_to_cache.append({
+                            "frame_index": d.frame_index,
+                            "timestamp_sec": d.timestamp_sec,
+                            "bbox": d.bbox.tolist(),
+                            "confidence": float(d.confidence),
+                            "landmarks_5": d.landmarks_5.tolist() if d.landmarks_5 is not None else None
+                        })
                 else:
                     prev_primary_bbox = None
+
+            # Save to cache if cache_dir is enabled
+            if cache_dir and video_dets_to_cache:
+                save_cache_file = os.path.join(cache_dir, f"{meta.category}_{meta.video_id}_detections.json")
+                try:
+                    with open(save_cache_file, "w", encoding="utf-8") as f:
+                        json.dump({
+                            "video_id": meta.video_id,
+                            "category": meta.category,
+                            "compression": meta.compression,
+                            "detections": video_dets_to_cache
+                        }, f, indent=2)
+                except Exception:
+                    pass
 
         except Exception as e:
             logger.warning(f"Error processing video {meta.video_id}: {e}")
 
     elapsed = time.time() - start_time
     fps = total_frames / elapsed if elapsed > 0 else 0.0
+
+    if cache_hits > 0:
+        logger.info(f"Loaded {cache_hits}/{len(videos)} videos directly from precomputed cache in {elapsed:.2f}s!")
 
     overall_coverage = frames_with_face / total_frames if total_frames > 0 else 0.0
     multi_face_rate = multi_face_frames / total_frames if total_frames > 0 else 0.0
@@ -165,6 +269,8 @@ def main():
     parser.add_argument("--data-dir", type=str, default=None, help="Generic dataset directory.")
     parser.add_argument("--ffpp-dir", type=str, default="/kaggle/working/data", help="FaceForensics++ dataset path.")
     parser.add_argument("--celebdf-dir", type=str, default="/kaggle/working/data_celebdf", help="Celeb-DF dataset path.")
+    parser.add_argument("--ffpp-cache", type=str, default="/kaggle/working/results/scrfd", help="Cache directory for FF++ detections.")
+    parser.add_argument("--celebdf-cache", type=str, default="/kaggle/working/results/scrfd_celebdf", help="Cache directory for Celeb-DF detections.")
     parser.add_argument("--output-dir", type=str, default="/kaggle/working/results/scrfd_evaluation", help="Output directory for reports.")
     parser.add_argument("--max-frames", type=int, default=16, help="Frames sampled per video.")
     parser.add_argument("--max-videos", type=int, default=None, help="Max videos per dataset.")
@@ -176,34 +282,33 @@ def main():
 
     datasets_to_run = {}
 
-    # Check explicitly passed single directory
     if args.data_dir and os.path.exists(args.data_dir):
-        datasets_to_run["Dataset"] = args.data_dir
+        datasets_to_run["Dataset"] = (args.data_dir, None)
     else:
-        # Check standard paths
-        ffpp_candidates = [args.ffpp-dir if hasattr(args, "ffpp-dir") else None, args.ffpp_dir, "/kaggle/working/data", "/kaggle/input/faceforensics-pilot", "./data"]
+        ffpp_candidates = [getattr(args, "ffpp_dir", None), "/kaggle/working/data", "/kaggle/input/faceforensics-pilot", "./data"]
         for p in ffpp_candidates:
             if p and os.path.exists(p) and os.listdir(p):
-                datasets_to_run["FaceForensics++"] = p
+                datasets_to_run["FaceForensics++"] = (p, args.ffpp_cache)
                 break
 
-        celebdf_candidates = [args.celebdf_dir, "/kaggle/working/data_celebdf", "/kaggle/input/celeb-df-v2", "./data_celebdf"]
+        celebdf_candidates = [getattr(args, "celebdf_dir", None), "/kaggle/working/data_celebdf", "/kaggle/input/celeb-df-v2", "./data_celebdf"]
         for p in celebdf_candidates:
             if p and os.path.exists(p) and os.listdir(p):
-                datasets_to_run["Celeb-DF"] = p
+                datasets_to_run["Celeb-DF"] = (p, args.celebdf_cache)
                 break
 
     if not datasets_to_run:
-        logger.error("No valid dataset directory found! Please provide --data-dir, --ffpp-dir, or --celebdf-dir.")
+        logger.error("No valid dataset directory found! Please check paths.")
         return
 
     benchmark_results = {}
 
-    for d_name, d_path in datasets_to_run.items():
+    for d_name, (d_path, c_path) in datasets_to_run.items():
         res = evaluate_dataset(
             data_dir=d_path,
             detector=detector,
             dataset_name=d_name,
+            cache_dir=c_path,
             max_frames=args.max_frames,
             max_videos=args.max_videos
         )
@@ -214,7 +319,7 @@ def main():
         logger.error("No evaluations completed.")
         return
 
-    # Print publication-grade comparison table
+    # Print comparison table
     print("\n" + "="*84)
     print("      STAGE 1: SCRFD FACE DETECTION CROSS-DATASET BENCHMARK RESULTS")
     print("="*84)
@@ -248,13 +353,13 @@ def main():
             print(f"    * {cat:<24}: {cov*100:.2f}%")
     print("="*84 + "\n")
 
-    # Save summary JSON (excluding raw array lists for lightweight export)
+    # Save summary JSON
     summary_export = {}
     for d_name, r in benchmark_results.items():
         summary_export[d_name] = {k: v for k, v in r.items() if k not in ["confidences", "ipds", "ious"]}
 
     metrics_file = os.path.join(args.output_dir, "scrfd_benchmark_summary.json")
-    with open(metrics_file, "w") as f:
+    with open(metrics_file, "w", encoding="utf-8") as f:
         json.dump(summary_export, f, indent=2)
     print(f"[+] Saved SCRFD benchmark metrics to: {metrics_file}")
 
