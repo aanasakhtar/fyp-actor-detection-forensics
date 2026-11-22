@@ -30,3 +30,31 @@ def test_verification_metrics():
     assert metrics["roc_auc"] == 1.0
     assert metrics["eer"] == 0.0
     assert metrics["genuine_mean"] > metrics["impostor_mean"]
+
+def test_detection_metrics_and_geometry():
+    import numpy as np
+    from pipeline.evaluation.detection_metrics import (
+        compute_bbox_iou,
+        compute_inter_pupillary_distance,
+        compute_landmark_geometric_validity
+    )
+    # IoU
+    box1 = np.array([0, 0, 100, 100], dtype=np.float32)
+    box2 = np.array([50, 0, 150, 100], dtype=np.float32)
+    iou = compute_bbox_iou(box1, box2)
+    assert 0.30 < iou < 0.35
+
+    # IPD
+    kps = np.array([
+        [30.0, 30.0],  # Left eye
+        [70.0, 30.0],  # Right eye
+        [50.0, 50.0],  # Nose
+        [35.0, 75.0],  # Left mouth
+        [65.0, 75.0]   # Right mouth
+    ], dtype=np.float32)
+    ipd = compute_inter_pupillary_distance(kps)
+    assert abs(ipd - 40.0) < 1e-4
+
+    # Geometric validity
+    valid = compute_landmark_geometric_validity(kps, box1)
+    assert valid is True

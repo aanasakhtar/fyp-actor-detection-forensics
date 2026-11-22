@@ -120,3 +120,85 @@ def plot_gend_evaluation(
         plt.close(fig)
     else:
         plt.show()
+
+def plot_scrfd_cross_dataset_evaluation(
+    dataset_metrics: dict,
+    title: str = "Stage 1: SCRFD Cross-Dataset Face Detection Forensic Benchmark",
+    save_path: Optional[str] = None
+) -> None:
+    """
+    Generate a 4-panel diagnostic figure evaluating SCRFD face detection across FF++ and Celeb-DF:
+    - Panel 1: Face Coverage Rate (%) by Category
+    - Panel 2: Detection Confidence (p_det) Distribution
+    - Panel 3: Inter-Pupillary Distance (IPD / Resolution)
+    - Panel 4: Temporal IoU Tracking Stability
+    """
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10), dpi=150)
+    ax1, ax2, ax3, ax4 = axes.flatten()
+
+    # Panel 1: Face Coverage Rate by Category
+    cat_names = []
+    cat_coverages = []
+    cat_colors = []
+    for d_name, d_res in dataset_metrics.items():
+        by_cat = d_res.get("category_coverage", {})
+        for c, cov in by_cat.items():
+            cat_names.append(f"{c}\n({d_name})")
+            cat_coverages.append(cov * 100.0)
+            cat_colors.append("#2ca02c" if "real" in c.lower() or "original" in c.lower() else "#d62728")
+
+    if cat_names:
+        bars = ax1.bar(range(len(cat_names)), cat_coverages, color=cat_colors, alpha=0.85, edgecolor="black")
+        ax1.set_xticks(range(len(cat_names)))
+        ax1.set_xticklabels(cat_names, rotation=35, ha="right", fontsize=9)
+        ax1.set_ylabel("Face Detection Coverage (%)", fontsize=10)
+        ax1.set_title("Frame-Level Face Coverage by Category", fontsize=11, fontweight="bold")
+        ax1.set_ylim([0, 105])
+        ax1.grid(True, alpha=0.3, axis="y")
+        for bar, val in zip(bars, cat_coverages):
+            ax1.text(bar.get_x() + bar.get_width()/2, val + 1.5, f"{val:.1f}%", ha="center", fontsize=8, fontweight="bold")
+
+    # Panel 2: Detection Confidence Distribution
+    colors = ["#1f77b4", "#ff7f0e", "#2ca02c"]
+    for idx, (d_name, d_res) in enumerate(dataset_metrics.items()):
+        confs = d_res.get("confidences", [])
+        if confs:
+            sns.kdeplot(confs, ax=ax2, label=f"{d_name} (Mean: {np.mean(confs):.3f})", color=colors[idx % len(colors)], lw=2.5)
+    ax2.set_xlabel("Detection Confidence Score p(det)", fontsize=10)
+    ax2.set_ylabel("Density", fontsize=10)
+    ax2.set_title("SCRFD Confidence Score Distribution", fontsize=11, fontweight="bold")
+    ax2.legend(loc="upper left")
+    ax2.grid(True, alpha=0.3)
+
+    # Panel 3: Face Resolution / Inter-Pupillary Distance
+    for idx, (d_name, d_res) in enumerate(dataset_metrics.items()):
+        ipds = d_res.get("ipds", [])
+        if ipds:
+            sns.kdeplot(ipds, ax=ax3, label=f"{d_name} (Mean IPD: {np.mean(ipds):.1f}px)", color=colors[idx % len(colors)], lw=2.5)
+    ax3.axvline(30.0, color="red", linestyle="--", lw=1.5, label="ArcFace Min Resolution (30px)")
+    ax3.set_xlabel("Inter-Pupillary Distance (IPD in pixels)", fontsize=10)
+    ax3.set_ylabel("Density", fontsize=10)
+    ax3.set_title("Face Scale & Resolution (IPD)", fontsize=11, fontweight="bold")
+    ax3.legend(loc="upper right")
+    ax3.grid(True, alpha=0.3)
+
+    # Panel 4: Temporal Bounding Box Stability (IoU)
+    for idx, (d_name, d_res) in enumerate(dataset_metrics.items()):
+        ious = d_res.get("ious", [])
+        if ious:
+            sns.kdeplot(ious, ax=ax4, label=f"{d_name} (Mean IoU: {np.mean(ious):.3f})", color=colors[idx % len(colors)], lw=2.5)
+    ax4.set_xlabel("Consecutive Frame Bounding Box IoU", fontsize=10)
+    ax4.set_ylabel("Density", fontsize=10)
+    ax4.set_title("Temporal Tracking Stability (Jitter Analysis)", fontsize=11, fontweight="bold")
+    ax4.legend(loc="upper left")
+    ax4.grid(True, alpha=0.3)
+
+    fig.suptitle(title, fontsize=13, fontweight="bold", y=1.01)
+    plt.tight_layout()
+
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, bbox_inches="tight")
+        plt.close(fig)
+    else:
+        plt.show()
