@@ -359,10 +359,19 @@ def main():
                     if emb is not None:
                         video_embs.append(emb)
                         
-                        # Model-specific alignment and resolution (380x380 for SBI EfficientNet-B4, 224x224 for GenD/ViT)
-                        forensic_crop = align_face_gend(f.image_bgr, primary.landmarks_5, target_size=crop_target_size, scale=1.30)
-                        if forensic_crop is None:
-                            forensic_crop = crop_context_face(f.image_bgr, primary.bbox, target_size=crop_target_size)
+                        # Model-specific alignment and resolution:
+                        # - SBI (EfficientNet-B4): Trained strictly on unwarped bounding box crops with 12.5% margin (380x380)
+                        # - ViT: Trained on unwarped bounding box crops (224x224)
+                        # - GenD: Trained on 5-point affine landmark alignment (align_face_gend)
+                        if model_choice in ["efficientnet-b4", "sbi", "efficientnet"]:
+                            forensic_crop = crop_context_face(f.image_bgr, primary.bbox, expansion_factor=1.15, target_size=(380, 380))
+                        elif model_choice in ["vit", "vit-base"]:
+                            forensic_crop = crop_context_face(f.image_bgr, primary.bbox, expansion_factor=1.20, target_size=(224, 224))
+                        else:
+                            forensic_crop = align_face_gend(f.image_bgr, primary.landmarks_5, target_size=crop_target_size, scale=1.30)
+                            if forensic_crop is None:
+                                forensic_crop = crop_context_face(f.image_bgr, primary.bbox, target_size=crop_target_size)
+
                         if forensic_crop is not None:
                             video_crops.append(forensic_crop)
                             

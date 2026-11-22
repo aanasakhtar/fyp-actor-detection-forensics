@@ -61,7 +61,8 @@ def crop_context_face(
                 sub_img, pad_top, pad_bottom, pad_left, pad_right, 
                 borderType=cv2.BORDER_REFLECT_101
             )
-        resized = cv2.resize(sub_img, target_size, interpolation=cv2.INTER_AREA)
+        interp = cv2.INTER_AREA if (sub_img.shape[0] >= target_size[1] and sub_img.shape[1] >= target_size[0]) else cv2.INTER_LINEAR
+        resized = cv2.resize(sub_img, target_size, interpolation=interp)
         return resized
     except Exception:
         # Fallback using numpy if cv2 is absent in development environment
