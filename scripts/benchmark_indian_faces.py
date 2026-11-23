@@ -39,6 +39,161 @@ from pipeline.utils.logging import get_logger
 logger = get_logger("benchmark_indian_faces")
 
 
+def find_optimal_threshold(y_true: List[int], scores: List[float]) -> Dict[str, Any]:
+    """Find optimal decision threshold maximizing Youden's J statistic (TPR - FPR)."""
+    fpr, tpr, thresholds = roc_curve(y_true, scores)
+    j_scores = tpr - fpr
+    best_idx = int(np.argmax(j_scores))
+    opt_thresh = float(thresholds[best_idx])
+    
+    # Clip to valid probability bounds [0.10, 0.92]
+    opt_thresh = max(0.10, min(0.92, opt_thresh))
+    
+    pred = (np.array(scores) >= opt_thresh).astype(int)
+    y_arr = np.array(y_true)
+    
+    acc = float(np.mean(pred == y_arr))
+    tp = int(np.sum((pred == 1) & (y_arr == 1)))
+    fp = int(np.sum((pred == 1) & (y_arr == 0)))
+    tn = int(np.sum((pred == 0) & (y_arr == 0)))
+    fn = int(np.sum((pred == 0) & (y_arr == 1)))
+    
+    rec = float(tp / max(1, (tp + fn)))
+    prec = float(tp / max(1, (tp + fp)))
+    fpr_real = float(fp / max(1, (fp + tn)))
+    f1 = float(2 * prec * rec / max(1e-6, (prec + rec)))
+    
+    return {
+        "optimal_threshold": round(opt_thresh, 3),
+        "calibrated_accuracy": round(acc, 4),
+        "calibrated_recall": round(rec, 4),
+        "calibrated_precision": round(prec, 4),
+        "calibrated_fpr_on_real": round(fpr_real, 4),
+        "calibrated_f1": round(f1, 4)
+    }
+
+
+def plot_indian_dashboard(
+    metrics_by_model: Dict[str, Dict[str, Any]],
+    timing_stats: Dict[str, Any],
+    labels_true: List[int],
+    scores_by_model: Dict[str, List[float]],
+    save_path: str,
+    calibrated_by_model: Optional[Dict[str, Dict[str, Any]]] = None
+):
+    """Render 4-panel executive diagnostic figure including Real vs. Fake boxplots."""
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12), dpi=150)
+    models = list(metrics_by_model.keys())
+    colors = ["#1976D2", "#388E3C", "#D32F2F", "#7B1FA2"][:len(models)]
+
+    # 1. Panel 1: Performance Bar Chart
+    ax1 = axes[0, 0]
+    metric_keys = ["accuracy", "roc_auc", "f1", "recall"]
+    metric_labels = ["Accuracy", "ROC-AUC", "F1 Score", "Recall (TPR)"]
+    x = np.arange(len(metric_labels))
+    w = 0.8 / max(1, len(models))
+
+    for i, (m_name, m_data) in enumerate(metrics_by_model.items()):
+        vals = [m_data.get(k, 0.0) for k in metric_keys]
+        offset = (i - len(models) / 2 + 0.5) * w
+        rects = ax1.bar(x + offset, vals, w, label=m_name, color=colors[i], alpha=0.88)
+        for r in rects:
+            h = r.get_height()
+            ax1.annotate(f"{h:.2f}", xy=(r.get_x() + r.get_width() / 2, h),
+                         xytext=(0, 3), textcoords="offset points", ha="center", va="bottom", fontsize=8)
+
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(metric_labels, fontweight="bold")
+    ax1.set_ylim(0, 1.15)
+    ax1.set_ylabel("Score (0.0 - 1.0)", fontweight="bold")
+    ax1.set_title("SOUTH ASIAN FACIAL DEEPFAKE DETECTION ACCURACY", fontsize=12, fontweight="bold", pad=10)
+    ax1.legend(loc="lower right", framealpha=0.9)
+    ax1.grid(axis="y", linestyle="--", alpha=0.5)
+
+    # 2. Panel 2: ROC Curves
+    ax2 = axes[0, 1]
+    y_true = np.array(labels_true)
+    for i, (m_name, scores) in enumerate(scores_by_model.items()):
+        if len(set(y_true)) > 1:
+            fpr, tpr, _ = roc_curve(y_true, scores)
+            roc_auc = metrics_by_model[m_name].get("roc_auc", 0.0)
+            ax2.plot(fpr, tpr, color=colors[i], lw=2.2, label=f"{m_name} (AUC = {roc_auc:.4f})")
+    ax2.plot([0, 1], [0, 1], color="grey", lw=1.2, linestyle="--")
+    ax2.set_xlim([0.0, 1.0])
+    ax2.set_ylim([0.0, 1.05])
+    ax2.set_xlabel("False Positive Rate (FPR)", fontweight="bold")
+    ax2.set_ylabel("True Positive Rate (TPR / Recall)", fontweight="bold")
+    ax2.set_title("RECEIVER OPERATING CHARACTERISTIC (ROC)", fontsize=12, fontweight="bold", pad=10)
+    ax2.legend(loc="lower right", framealpha=0.9)
+    ax2.grid(True, linestyle="--", alpha=0.5)
+
+    # 3. Panel 3: Prediction Distributions (Real vs Fake Boxplots)
+    ax3 = axes[1, 0]
+    box_positions = []
+    box_data = []
+    box_colors = []
+    pos = 1
+    for i, (m_name, scores) in enumerate(scores_by_model.items()):
+        s_arr = np.array(scores)
+        real_s = s_arr[y_true == 0]
+        fake_s = s_arr[y_true == 1]
+        box_data.extend([real_s, fake_s])
+        box_positions.extend([pos, pos + 0.8])
+        box_colors.extend(["#4CAF50", "#E53935"])  # Green for Real, Red for Fake
+        pos += 2.2
+
+    if box_data:
+        bp = ax3.boxplot(box_data, positions=box_positions, widths=0.6, patch_artist=True)
+        for patch, col in zip(bp["boxes"], box_colors):
+            patch.set_facecolor(col)
+            patch.set_alpha(0.75)
+        ax3.set_xticks([1.4 + i * 2.2 for i in range(len(models))])
+        ax3.set_xticklabels([m for m in models], fontweight="bold")
+        ax3.axhline(0.50, color="black", linestyle=":", lw=1.5, label="Default Threshold (0.50)")
+        if calibrated_by_model:
+            best_m = max(metrics_by_model.keys(), key=lambda k: metrics_by_model[k].get("roc_auc", 0.0))
+            best_t = calibrated_by_model.get(best_m, {}).get("optimal_threshold")
+            if best_t:
+                ax3.axhline(best_t, color="#1976D2", linestyle="--", lw=2.0, label=f"Calibrated T* ({best_m}: {best_t:.2f})")
+        ax3.set_ylabel("Manipulation Score p(Fake)", fontweight="bold")
+        ax3.set_title("PREDICTION DISTRIBUTIONS: REAL (Green) vs FAKE (Red)", fontsize=12, fontweight="bold", pad=10)
+        ax3.grid(axis="y", linestyle="--", alpha=0.5)
+        ax3.legend(loc="upper left")
+
+    # 4. Panel 4: Latency & Throughput Benchmark
+    ax4 = axes[1, 1]
+    det_time = timing_stats.get("avg_detection_ms", 0.0)
+    arc_time = timing_stats.get("avg_embedding_ms", 0.0)
+    inf_times = [timing_stats.get("models", {}).get(m, {}).get("stage_3_forensic_ms", 0.0) for m in models]
+    y_pos = np.arange(len(models))
+
+    ax4.barh(y_pos, [det_time] * len(models), height=0.45, label=f"Stage 1: SCRFD Detection ({det_time:.1f} ms)", color="#607D8B", alpha=0.85)
+    ax4.barh(y_pos, [arc_time] * len(models), left=[det_time] * len(models), height=0.45, label=f"Stage 2: ArcFace Biometrics ({arc_time:.1f} ms)", color="#009688", alpha=0.85)
+    ax4.barh(y_pos, inf_times, left=[det_time + arc_time] * len(models), height=0.45, label="Stage 3: Deepfake Forensics", color="#FF9800", alpha=0.85)
+
+    max_tot = 0.0
+    for i, m in enumerate(models):
+        tot = det_time + arc_time + inf_times[i]
+        if tot > max_tot:
+            max_tot = tot
+        fps = 1000.0 / tot if tot > 0 else 0.0
+        ax4.text(tot + 5, i, f"Total: {tot:.1f} ms ({fps:.1f} FPS)\n[S3: {inf_times[i]:.1f} ms]", va="center", fontweight="bold", fontsize=8.5)
+
+    ax4.set_xlim(0, max(100.0, max_tot * 1.35))
+    ax4.set_yticks(y_pos)
+    ax4.set_yticklabels(models, fontweight="bold")
+    ax4.set_xlabel("Latency per Image (Milliseconds - Lower is Faster)", fontweight="bold")
+    ax4.set_title("END-TO-END PIPELINE LATENCY BREAKDOWN (Stages 1, 2, 3)", fontsize=12, fontweight="bold", pad=10)
+    ax4.legend(loc="lower right", framealpha=0.92)
+    ax4.grid(axis="x", linestyle="--", alpha=0.5)
+
+    plt.suptitle("BENCHMARK: INDIAN & SOUTH ASIAN DEEPFAKE DETECTION (mrxaman19)", fontsize=15, fontweight="bold", y=0.98)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, bbox_inches="tight")
+    plt.close(fig)
+
+
 def init_forensic_models(model_names: List[str]) -> Dict[str, Any]:
     """Instantiate requested forensic detection models."""
     models = {}
@@ -222,8 +377,9 @@ def main():
             print(f"  [{idx+1:03d}/{len(records):03d}] True: {'FAKE' if item['is_fake'] else 'REAL':4s} | " +
                   " | ".join([f"{m[:12]}: {step_scores.get(m, 0.0):.4f}" for m in forensic_models]))
 
-    # 4. Compute Metrics
+    # 4. Compute Metrics (Uncalibrated @ 0.50 and Calibrated @ Optimal T*)
     metrics_by_model = {}
+    calibrated_by_model = {}
     for m_name in forensic_models:
         m_dict = compute_forensic_metrics(labels_true, scores_by_model[m_name], threshold=0.50)
         cm = m_dict.get("confusion_matrix", [[0, 0], [0, 0]])
@@ -231,6 +387,7 @@ def main():
         fpr = fp / max(1, (fp + tn))
         m_dict["fpr_on_real"] = round(fpr, 4)
         metrics_by_model[m_name] = m_dict
+        calibrated_by_model[m_name] = find_optimal_threshold(labels_true, scores_by_model[m_name])
 
     # 5. Timing Statistics
     avg_det_ms = (total_det_time / max(1, total_images_processed)) * 1000.0
@@ -270,57 +427,33 @@ def main():
     print("="*112)
 
     print("\n" + "="*104)
-    print("                TABLE 2: SOUTH ASIAN ACCURACY & DIAGNOSTIC METRICS SUMMARY")
+    print("                TABLE 2: DEFAULT FORENSIC PERFORMANCE (THRESHOLD = 0.50)")
     print("="*104)
     print(f"{'Forensic Detector':24s} | {'ROC-AUC':7s} | {'Accuracy':8s} | {'Recall':6s} | {'Precision':9s} | {'FPR (Real)':10s} | {'F1 Score':8s}")
     print("-" * 104)
     for m_name, m_data in metrics_by_model.items():
         print(f"{m_name:24s} | {m_data['roc_auc']:7.4f} | {m_data['accuracy']*100:6.1f} % | {m_data['recall']*100:5.1f}% | {m_data['precision']*100:7.1f}% | {m_data['fpr_on_real']*100:7.1f} % | {m_data.get('f1', 0.0):7.4f}")
-    print("="*104 + "\n")
+    print("="*104)
 
-    # 7. Render Diagnostic Card
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6), dpi=150)
-    models = list(metrics_by_model.keys())
-    colors = ["#1976D2", "#388E3C", "#D32F2F", "#7B1FA2"][:len(models)]
+    print("\n" + "="*124)
+    print("                TABLE 3: CALIBRATED FORENSIC PERFORMANCE (OPTIMAL THRESHOLD T*)")
+    print("="*124)
+    print(f"{'Forensic Detector':24s} | {'Optimal T*':11s} | {'Calibrated Acc':15s} | {'Recall':8s} | {'Precision':10s} | {'FPR (Real)':11s} | {'F1 Score':8s}")
+    print("-" * 124)
+    for m_name, c_data in calibrated_by_model.items():
+        print(f"{m_name:24s} | {c_data['optimal_threshold']:11.3f} | {c_data['calibrated_accuracy']*100:13.1f} % | {c_data['calibrated_recall']*100:6.1f} % | {c_data['calibrated_precision']*100:8.1f} % | {c_data['calibrated_fpr_on_real']*100:9.1f} % | {c_data['calibrated_f1']:8.4f}")
+    print("="*124 + "\n")
 
-    # Panel 1: Bar chart
-    metric_keys = ["accuracy", "roc_auc", "recall", "precision"]
-    metric_labels = ["Accuracy", "ROC-AUC", "Recall", "Precision"]
-    x = np.arange(len(metric_labels))
-    w = 0.8 / max(1, len(models))
-    for i, (m, d) in enumerate(metrics_by_model.items()):
-        vals = [d.get(k, 0.0) for k in metric_keys]
-        ax1.bar(x + (i - len(models)/2 + 0.5) * w, vals, w, label=m, color=colors[i], alpha=0.85)
-
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(metric_labels, fontweight="bold")
-    ax1.set_ylim(0, 1.15)
-    ax1.set_ylabel("Score (0.0 - 1.0)", fontweight="bold")
-    ax1.set_title("SOUTH ASIAN FACIAL DEEPFAKE DETECTION ACCURACY", fontweight="bold", pad=10)
-    ax1.legend(loc="lower right")
-    ax1.grid(axis="y", linestyle="--", alpha=0.5)
-
-    # Panel 2: ROC Curves
-    y_true = np.array(labels_true)
-    for i, (m, sc) in enumerate(scores_by_model.items()):
-        if len(set(y_true)) > 1:
-            fpr, tpr, _ = roc_curve(y_true, sc)
-            auc_val = metrics_by_model[m].get("roc_auc", 0.0)
-            ax2.plot(fpr, tpr, color=colors[i], lw=2.2, label=f"{m} (AUC = {auc_val:.4f})")
-    ax2.plot([0, 1], [0, 1], "k--", lw=1.2, alpha=0.7)
-    ax2.set_xlim([0.0, 1.0])
-    ax2.set_ylim([0.0, 1.05])
-    ax2.set_xlabel("False Positive Rate (FPR)", fontweight="bold")
-    ax2.set_ylabel("True Positive Rate (TPR / Recall)", fontweight="bold")
-    ax2.set_title("RECEIVER OPERATING CHARACTERISTIC (ROC)", fontweight="bold", pad=10)
-    ax2.legend(loc="lower right")
-    ax2.grid(True, linestyle="--", alpha=0.5)
-
-    plt.suptitle("BENCHMARK: INDIAN & SOUTH ASIAN DEEPFAKE DETECTION (mrxaman19)", fontsize=13, fontweight="bold")
-    plt.tight_layout()
+    # 7. Render 4-Panel Diagnostic Card
     chart_path = os.path.join(args.output_dir, "indian_deepfake_benchmark.png")
-    plt.savefig(chart_path, bbox_inches="tight")
-    plt.close(fig)
+    plot_indian_dashboard(
+        metrics_by_model=metrics_by_model,
+        timing_stats=timing_stats,
+        labels_true=labels_true,
+        scores_by_model=scores_by_model,
+        save_path=chart_path,
+        calibrated_by_model=calibrated_by_model
+    )
 
     # 8. Save JSON
     json_path = os.path.join(args.output_dir, "indian_deepfake_results.json")
@@ -330,11 +463,12 @@ def main():
             "images_evaluated": total_images_processed,
             "real_images": sum(1 for y in labels_true if y == 0),
             "fake_images": sum(1 for y in labels_true if y == 1),
-            "metrics": metrics_by_model,
+            "metrics_at_0_50": metrics_by_model,
+            "calibrated_metrics": calibrated_by_model,
             "timing": timing_stats
         }, jf, indent=2)
 
-    print(f"[+] Saved Executive Benchmark Report Card to: {chart_path}")
+    print(f"[+] Saved 4-Panel Benchmark Report Card to: {chart_path}")
     print(f"[+] Saved Machine-Readable Results to: {json_path}\n")
 
 
