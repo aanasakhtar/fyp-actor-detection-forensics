@@ -206,9 +206,35 @@ def main():
     print("="*78)
 
     # 1. Initialize Dataset
-    loader = FFppDatasetLoader(args.data_dir)
+    target_data_dir = args.data_dir
+    if not os.path.exists(target_data_dir):
+        logger.warning(f"Data root directory does not exist: '{target_data_dir}'. Searching for mounted datasets...")
+        import glob
+        found = (
+            glob.glob("/kaggle/input/**/Celeb-synthesis", recursive=True) +
+            glob.glob("/kaggle/input/**/celeb-synthesis", recursive=True) +
+            glob.glob("/kaggle/input/**/Celeb-real", recursive=True) +
+            glob.glob("/kaggle/input/**/original_sequences", recursive=True)
+        )
+        if found:
+            target_data_dir = os.path.dirname(found[0])
+            logger.info(f"Auto-discovered dataset root at: '{target_data_dir}'")
+        elif os.path.exists("/kaggle/input"):
+            subdirs = os.listdir("/kaggle/input")
+            logger.info(f"Available directories in /kaggle/input: {subdirs}")
+            for sd in subdirs:
+                cand = os.path.join("/kaggle/input", sd)
+                if os.path.isdir(cand) and "celeb" in sd.lower():
+                    target_data_dir = cand
+                    logger.info(f"Attempting candidate Celeb directory: '{target_data_dir}'")
+                    break
+
+    loader = FFppDatasetLoader(target_data_dir)
     if len(loader) == 0:
-        logger.error(f"No valid MP4 videos found in '{args.data_dir}'. Please verify data directory.")
+        logger.error(f"No valid MP4 videos found in '{target_data_dir}'.")
+        if os.path.exists("/kaggle/input"):
+            logger.error(f"Currently mounted in /kaggle/input: {os.listdir('/kaggle/input')}")
+        logger.error("Please check if the dataset has finished mounting in Kaggle's 'Input' pane.")
         return
 
     # Select balanced sample if max_videos is specified
