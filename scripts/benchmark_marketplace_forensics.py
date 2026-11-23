@@ -1,0 +1,400 @@
+"""
+Comprehensive Forensic Benchmark & Latency Profiler for Talent Marketplace Monitoring.
+
+Evaluates forensic detectors (ViT, SBI EfficientNet-B4, GenD) across large-coverage datasets (Celeb-DF & FF++).
+Measures:
+  1. Diagnostic Detection Metrics: ROC-AUC, PR-AUC, Accuracy, Precision, Recall, F1, FPR on Real.
+  2. Latency Benchmarking: Detection (SCRFD), Biometric Embedding (ArcFace), and Forensic Inference (ms/frame, FPS).
+  3. Executive Visual Comparison: 4-panel diagnostic card and JSON summary.
+"""
+
+import os
+import sys
+import time
+import argparse
+import json
+from typing import Dict, List, Any
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_curve, auc
+
+# Ensure local 'src' directory takes priority in sys.path
+src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+if src_dir not in sys.path:
+    sys.path.insert(0, src_dir)
+
+from pipeline.data.dataset_loader import FFppDatasetLoader
+from pipeline.data.video_reader import VideoReader
+from pipeline.detection.scrfd_detector import SCRFDDetector
+from pipeline.preprocessing.face_alignment import align_face_5point, align_face_gend
+from pipeline.preprocessing.face_cropping import crop_context_face
+from pipeline.recognition.arcface_encoder import ArcFaceEncoder
+from pipeline.forensics.vit_detector import ViTDeepfakeDetector
+from pipeline.forensics.sbi_detector import SBIEfficientNetDetector
+from pipeline.forensics.clip_detector import GenDCLIPDetector
+from pipeline.forensics.pe_detector import GenDPEDetector
+from pipeline.forensics.dinov3_detector import GenDDINOv3Detector
+from pipeline.evaluation.forensic_metrics import compute_forensic_metrics
+from pipeline.utils.logging import get_logger
+
+logger = get_logger("benchmark_forensics")
+
+
+def init_forensic_models(model_names: List[str]) -> Dict[str, Any]:
+    """Instantiate requested forensic detection models."""
+    models = {}
+    for name in model_names:
+        key = name.lower().strip()
+        try:
+            if key in ["vit", "vit-base"]:
+                logger.info("Initializing ViT Deepfake Detector ('dima806/deepfake_vs_real_image_detection')...")
+                models["ViT"] = ViTDeepfakeDetector()
+            elif key in ["efficientnet-b4", "sbi", "efficientnet"]:
+                logger.info("Initializing SBI EfficientNet-B4 ('nikokons/contrastive-deepfake-detector')...")
+                models["EfficientNet-B4 (SBI)"] = SBIEfficientNetDetector()
+            elif key in ["gend-pe", "pe"]:
+                logger.info("Initializing GenD Perception Encoder ('yermandy/GenD_PE_L')...")
+                models["GenD (PE-L)"] = GenDPEDetector()
+            elif key in ["gend-clip", "clip"]:
+                logger.info("Initializing GenD CLIP ('yermandy/GenD_CLIP_L_14')...")
+                models["GenD (CLIP-L)"] = GenDCLIPDetector()
+            elif key in ["gend-dinov3", "dinov3"]:
+                logger.info("Initializing GenD DINOv3 ('yermandy/GenD_DINOv3_L')...")
+                models["GenD (DINOv3-L)"] = GenDDINOv3Detector()
+            else:
+                logger.warning(f"Unknown forensic model '{name}'. Skipping.")
+        except Exception as e:
+            logger.error(f"Failed to load model '{name}': {e}")
+
+    # Keep only successfully loaded models
+    active_models = {k: v for k, v in models.items() if getattr(v, "model", None) is not None}
+    return active_models
+
+
+def plot_benchmark_dashboard(
+    metrics_by_model: Dict[str, Dict[str, Any]],
+    timing_stats: Dict[str, Dict[str, float]],
+    labels_true: List[int],
+    scores_by_model: Dict[str, List[float]],
+    save_path: str
+):
+    """Render 4-panel executive diagnostic figure."""
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12), dpi=150)
+    models = list(metrics_by_model.keys())
+    colors = ["#1976D2", "#388E3C", "#D32F2F", "#7B1FA2", "#F57C00"][:len(models)]
+
+    # 1. Panel 1: Performance Metrics Comparison (Bar Chart)
+    ax1 = axes[0, 0]
+    metric_keys = ["accuracy", "roc_auc", "f1", "recall"]
+    metric_labels = ["Accuracy", "ROC-AUC", "F1 Score", "Recall (TPR)"]
+    x = np.arange(len(metric_labels))
+    width = 0.8 / max(1, len(models))
+
+    for i, (m_name, m_data) in enumerate(metrics_by_model.items()):
+        vals = [m_data.get(k, 0.0) for k in metric_keys]
+        offset = (i - len(models) / 2 + 0.5) * width
+        rects = ax1.bar(x + offset, vals, width, label=m_name, color=colors[i], alpha=0.88)
+        for r in rects:
+            h = r.get_height()
+            ax1.annotate(f"{h:.2f}", xy=(r.get_x() + r.get_width() / 2, h),
+                         xytext=(0, 3), textcoords="offset points", ha="center", va="bottom", fontsize=8)
+
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(metric_labels, fontweight="bold")
+    ax1.set_ylim(0, 1.15)
+    ax1.set_ylabel("Score (0.0 - 1.0)", fontweight="bold")
+    ax1.set_title("FORENSIC ACCURACY & DETECTION POWER", fontsize=12, fontweight="bold", pad=10)
+    ax1.legend(loc="lower right", framealpha=0.9)
+    ax1.grid(axis="y", linestyle="--", alpha=0.5)
+
+    # 2. Panel 2: ROC Curves
+    ax2 = axes[0, 1]
+    y_true = np.array(labels_true)
+    for i, (m_name, scores) in enumerate(scores_by_model.items()):
+        if len(set(y_true)) > 1:
+            fpr, tpr, _ = roc_curve(y_true, scores)
+            roc_auc = metrics_by_model[m_name].get("roc_auc", 0.0)
+            ax2.plot(fpr, tpr, color=colors[i], lw=2.2, label=f"{m_name} (AUC = {roc_auc:.4f})")
+    ax2.plot([0, 1], [0, 1], color="grey", lw=1.2, linestyle="--")
+    ax2.set_xlim([0.0, 1.0])
+    ax2.set_ylim([0.0, 1.05])
+    ax2.set_xlabel("False Positive Rate (FPR)", fontweight="bold")
+    ax2.set_ylabel("True Positive Rate (TPR / Recall)", fontweight="bold")
+    ax2.set_title("RECEIVER OPERATING CHARACTERISTIC (ROC)", fontsize=12, fontweight="bold", pad=10)
+    ax2.legend(loc="lower right", framealpha=0.9)
+    ax2.grid(True, linestyle="--", alpha=0.5)
+
+    # 3. Panel 3: Score Distribution (Real vs Fake)
+    ax3 = axes[1, 0]
+    box_positions = []
+    box_data = []
+    box_colors = []
+    tick_labels = []
+
+    pos = 1
+    for i, (m_name, scores) in enumerate(scores_by_model.items()):
+        s_arr = np.array(scores)
+        real_s = s_arr[y_true == 0]
+        fake_s = s_arr[y_true == 1]
+        
+        box_data.extend([real_s, fake_s])
+        box_positions.extend([pos, pos + 0.8])
+        box_colors.extend(["#4CAF50", "#E53935"])  # Green for Real, Red for Fake
+        tick_labels.append(f"{m_name}\n(Real / Fake)")
+        pos += 2.2
+
+    if box_data:
+        bp = ax3.boxplot(box_data, positions=box_positions, widths=0.6, patch_artist=True)
+        for patch, col in zip(bp["boxes"], box_colors):
+            patch.set_facecolor(col)
+            patch.set_alpha(0.75)
+        ax3.set_xticks([1.4 + i * 2.2 for i in range(len(models))])
+        ax3.set_xticklabels([m for m in models], fontweight="bold")
+        ax3.axhline(0.50, color="black", linestyle=":", lw=1.5, label="Decision Threshold (0.50)")
+        ax3.set_ylabel("Manipulation Score p(Fake)", fontweight="bold")
+        ax3.set_title("PREDICTION DISTRIBUTIONS: REAL (Green) vs FAKE (Red)", fontsize=12, fontweight="bold", pad=10)
+        ax3.grid(axis="y", linestyle="--", alpha=0.5)
+        ax3.legend(loc="upper left")
+
+    # 4. Panel 4: Latency & Throughput Benchmark (ms/frame)
+    ax4 = axes[1, 1]
+    det_time = timing_stats.get("avg_detection_ms", 0.0)
+    arc_time = timing_stats.get("avg_embedding_ms", 0.0)
+    
+    inf_times = [timing_stats.get("models", {}).get(m, {}).get("avg_inference_ms", 0.0) for m in models]
+    y_pos = np.arange(len(models))
+    
+    # Stacked horizontal bar: Stage 1 + Stage 2 + Stage 3
+    ax4.barh(y_pos, [det_time] * len(models), height=0.45, label="SCRFD Face Detection", color="#607D8B", alpha=0.85)
+    ax4.barh(y_pos, [arc_time] * len(models), left=[det_time] * len(models), height=0.45, label="ArcFace Biometrics", color="#009688", alpha=0.85)
+    ax4.barh(y_pos, inf_times, left=[det_time + arc_time] * len(models), height=0.45, label="Forensic Model Forward", color="#FF9800", alpha=0.85)
+
+    for i, m in enumerate(models):
+        tot = det_time + arc_time + inf_times[i]
+        fps = 1000.0 / tot if tot > 0 else 0.0
+        ax4.text(tot + 2, i, f"Total: {tot:.1f} ms ({fps:.1f} FPS)", va="center", fontweight="bold", fontsize=9)
+
+    ax4.set_yticks(y_pos)
+    ax4.set_yticklabels(models, fontweight="bold")
+    ax4.set_xlabel("Latency per Frame (Milliseconds - Lower is Faster)", fontweight="bold")
+    ax4.set_title("PIPELINE LATENCY BREAKDOWN (Stages 1, 2, 3)", fontsize=12, fontweight="bold", pad=10)
+    ax4.legend(loc="lower right")
+    ax4.grid(axis="x", linestyle="--", alpha=0.5)
+
+    plt.suptitle("TALENT MARKETPLACE: COMPREHENSIVE AI FORENSICS & LATENCY BENCHMARK", fontsize=15, fontweight="bold", y=0.98)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Saved Executive Benchmark Report Card to: {save_path}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Evaluate forensic detectors across multiple videos and frames.")
+    parser.add_argument("--data-dir", type=str, default="/kaggle/working/data_celebdf", help="Dataset directory (Celeb-DF or FF++).")
+    parser.add_argument("--models", nargs="+", default=["vit", "efficientnet-b4"], help="Forensic models to benchmark ('vit', 'efficientnet-b4', 'gend-clip', 'gend-pe', 'gend-dinov3').")
+    parser.add_argument("--output-dir", type=str, default="/kaggle/working/results/marketplace_benchmark", help="Output directory.")
+    parser.add_argument("--max-videos", type=int, default=None, help="Maximum number of videos to evaluate (balanced real/fake).")
+    parser.add_argument("--max-frames", type=int, default=12, help="Uniform sampled frames per video.")
+    args = parser.parse_args()
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    print("\n" + "="*78)
+    print("      TALENT MARKETPLACE: MULTI-MODEL FORENSIC EVALUATION & LATENCY BENCHMARK")
+    print("="*78)
+
+    # 1. Initialize Dataset
+    loader = FFppDatasetLoader(args.data_dir)
+    if len(loader) == 0:
+        logger.error(f"No valid MP4 videos found in '{args.data_dir}'. Please verify data directory.")
+        return
+
+    # Select balanced sample if max_videos is specified
+    eval_videos = loader.videos
+    if args.max_videos and len(eval_videos) > args.max_videos:
+        reals = [v for v in loader.videos if not v.is_fake]
+        fakes = [v for v in loader.videos if v.is_fake]
+        n_half = args.max_videos // 2
+        rng = np.random.RandomState(42)
+        sample_reals = list(rng.choice(reals, min(len(reals), n_half), replace=False)) if reals else []
+        sample_fakes = list(rng.choice(fakes, min(len(fakes), args.max_videos - len(sample_reals)), replace=False)) if fakes else []
+        eval_videos = sample_reals + sample_fakes
+
+    n_real = sum(1 for v in eval_videos if not v.is_fake)
+    n_fake = sum(1 for v in eval_videos if v.is_fake)
+    logger.info(f"Target Evaluation Set: {len(eval_videos)} videos ({n_real} Real, {n_fake} Deepfake)")
+
+    # 2. Initialize Engines
+    detector = SCRFDDetector(conf_threshold=0.50)
+    encoder = ArcFaceEncoder()
+    forensic_models = init_forensic_models(args.models)
+
+    if not forensic_models:
+        logger.error("No forensic models loaded. Exiting.")
+        return
+
+    # Tracking storage
+    scores_by_model: Dict[str, List[float]] = {m: [] for m in forensic_models}
+    labels_true: List[int] = []
+    
+    # Timing accumulation (seconds)
+    total_det_time = 0.0
+    total_arc_time = 0.0
+    total_model_times = {m: 0.0 for m in forensic_models}
+    total_frames_processed = 0
+    total_faces_processed = 0
+    video_records = []
+
+    print(f"\nProcessing {len(eval_videos)} videos with {len(forensic_models)} forensic models...")
+
+    for v_idx, meta in enumerate(eval_videos):
+        t_vid_start = time.time()
+        reader = VideoReader(meta.video_path)
+        frames = reader.sample_uniform(max_frames=args.max_frames)
+        
+        if not frames:
+            continue
+
+        vid_crops_by_model = {m: [] for m in forensic_models}
+        vid_embs = []
+
+        # Stage 1: Face Detection & Stage 2: Embedding
+        for f in frames:
+            t0 = time.time()
+            dets = detector.detect_frame(f.image_bgr, f.frame_index, f.timestamp_sec)
+            total_det_time += (time.time() - t0)
+            total_frames_processed += 1
+
+            if dets:
+                primary = max(dets, key=lambda d: (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]))
+                total_faces_processed += 1
+                
+                # ArcFace embedding
+                if primary.landmarks_5 is not None:
+                    aligned = align_face_5point(f.image_bgr, primary.landmarks_5)
+                    if aligned is not None:
+                        t0 = time.time()
+                        emb = encoder.extract_embedding(aligned)
+                        total_arc_time += (time.time() - t0)
+                        if emb is not None:
+                            vid_embs.append(emb)
+
+                # Prepare model-tailored crops
+                for m_name in forensic_models:
+                    if "vit" in m_name.lower():
+                        c = crop_context_face(f.image_bgr, primary.bbox, expansion_factor=1.20, target_size=(224, 224))
+                    elif "efficientnet" in m_name.lower() or "sbi" in m_name.lower():
+                        c = crop_context_face(f.image_bgr, primary.bbox, expansion_factor=1.15, target_size=(380, 380))
+                    else:  # GenD models
+                        c = align_face_gend(f.image_bgr, primary.landmarks_5, target_size=(224, 224), scale=1.30)
+                        if c is None:
+                            c = crop_context_face(f.image_bgr, primary.bbox, target_size=(224, 224))
+                    if c is not None:
+                        vid_crops_by_model[m_name].append(c)
+
+        # Stage 3: Inference across forensic models
+        vid_scores = {}
+        for m_name, model in forensic_models.items():
+            crops = vid_crops_by_model[m_name]
+            if crops:
+                t0 = time.time()
+                f_scores = model.predict_crops(crops)
+                total_model_times[m_name] += (time.time() - t0)
+                agg_score = model.aggregate_scores(f_scores)
+            else:
+                agg_score = 0.0
+            vid_scores[m_name] = agg_score
+            scores_by_model[m_name].append(agg_score)
+
+        is_fake_int = 1 if meta.is_fake else 0
+        labels_true.append(is_fake_int)
+
+        t_vid_elapsed = time.time() - t_vid_start
+        video_records.append({
+            "video_id": meta.video_id,
+            "category": meta.category,
+            "is_fake": meta.is_fake,
+            "scores": vid_scores,
+            "latency_sec": round(t_vid_elapsed, 3)
+        })
+
+        if (v_idx + 1) % 5 == 0 or (v_idx + 1) == len(eval_videos):
+            print(f"  [{v_idx+1:02d}/{len(eval_videos):02d}] {meta.category:16s} | "
+                  f"True: {'FAKE' if meta.is_fake else 'REAL':4s} | " + 
+                  " | ".join([f"{m[:12]}: {vid_scores.get(m, 0.0):.4f}" for m in forensic_models]))
+
+    # 3. Compute Metrics
+    metrics_by_model = {}
+    for m_name in forensic_models:
+        m_dict = compute_forensic_metrics(labels_true, scores_by_model[m_name], threshold=0.50)
+        # Compute False Positive Rate (FPR) on Real videos
+        cm = m_dict.get("confusion_matrix", [[0, 0], [0, 0]])
+        tn, fp = cm[0][0], cm[0][1]
+        fpr = fp / max(1, (fp + tn))
+        m_dict["fpr_on_real"] = round(fpr, 4)
+        metrics_by_model[m_name] = m_dict
+
+    # 4. Latency Statistics
+    avg_det_ms = (total_det_time / max(1, total_frames_processed)) * 1000.0
+    avg_arc_ms = (total_arc_time / max(1, total_faces_processed)) * 1000.0
+    timing_stats = {
+        "avg_detection_ms": round(avg_det_ms, 2),
+        "avg_embedding_ms": round(avg_arc_ms, 2),
+        "total_frames": total_frames_processed,
+        "total_faces": total_faces_processed,
+        "models": {}
+    }
+
+    for m_name in forensic_models:
+        avg_inf_ms = (total_model_times[m_name] / max(1, total_faces_processed)) * 1000.0
+        tot_ms = avg_det_ms + avg_arc_ms + avg_inf_ms
+        fps = 1000.0 / tot_ms if tot_ms > 0 else 0.0
+        timing_stats["models"][m_name] = {
+            "avg_inference_ms": round(avg_inf_ms, 2),
+            "total_frame_ms": round(tot_ms, 2),
+            "effective_fps": round(fps, 1)
+        }
+
+    # 5. Print Markdown Performance Table
+    print("\n" + "="*100)
+    print("                 COMPREHENSIVE BENCHMARK RESULTS & METRICS SUMMARY")
+    print("="*100)
+    print(f"{'Forensic Detector':24s} | {'ROC-AUC':7s} | {'Accuracy':8s} | {'Recall':6s} | {'Precision':9s} | {'FPR (Real)':10s} | {'Latency':8s} | {'Throughput':10s}")
+    print("-" * 100)
+    for m_name, m_data in metrics_by_model.items():
+        t_data = timing_stats["models"].get(m_name, {})
+        lat = f"{t_data.get('avg_inference_ms', 0):.1f} ms"
+        fps = f"{t_data.get('effective_fps', 0):.1f} FPS"
+        print(f"{m_name:24s} | {m_data['roc_auc']:7.4f} | {m_data['accuracy']*100:6.1f} % | {m_data['recall']*100:5.1f}% | {m_data['precision']*100:7.1f}% | {m_data['fpr_on_real']*100:7.1f} % | {lat:8s} | {fps:10s}")
+    print("="*100 + "\n")
+
+    # 6. Generate 4-Panel Executive Diagnostic Report Card
+    report_img_path = os.path.join(args.output_dir, "marketplace_forensic_benchmark.png")
+    plot_benchmark_dashboard(
+        metrics_by_model=metrics_by_model,
+        timing_stats=timing_stats,
+        labels_true=labels_true,
+        scores_by_model=scores_by_model,
+        save_path=report_img_path
+    )
+
+    # 7. Save JSON Export
+    json_path = os.path.join(args.output_dir, "marketplace_benchmark_results.json")
+    with open(json_path, "w") as jf:
+        json.dump({
+            "dataset_dir": args.data_dir,
+            "videos_evaluated": len(eval_videos),
+            "real_videos": n_real,
+            "fake_videos": n_fake,
+            "metrics": metrics_by_model,
+            "timing_benchmarks": timing_stats,
+            "per_video_records": video_records
+        }, jf, indent=2)
+    print(f"[+] Saved Machine-Readable Benchmark Results to: {json_path}")
+    print(f"[+] Saved Executive Benchmark Report Card to: {report_img_path}\n")
+
+
+if __name__ == "__main__":
+    main()

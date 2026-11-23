@@ -66,3 +66,19 @@ def test_sbi_detector_interface():
     agg = SBIEfficientNetDetector.aggregate_scores(scores, method="trimmed_mean", trim_ratio=0.20)
     assert agg < 0.20
 
+
+def test_forensic_metrics_with_confusion_matrix():
+    y_true = [0, 0, 0, 1, 1]
+    y_scores = [0.1, 0.2, 0.6, 0.8, 0.9]  # 1 false positive on real (0.6)
+    metrics = compute_forensic_metrics(y_true, y_scores, threshold=0.5)
+    cm = metrics["confusion_matrix"]
+    tn, fp = cm[0][0], cm[0][1]
+    fn, tp = cm[1][0], cm[1][1]
+    assert tn == 2
+    assert fp == 1
+    assert tp == 2
+    assert fn == 0
+    fpr = fp / (fp + tn)
+    assert abs(fpr - 0.3333) < 1e-2
+
+

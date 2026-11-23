@@ -55,11 +55,20 @@ def download_with_gdown(file_id: str, output_path: str) -> bool:
 def selective_extract_hard_cases(
     zip_path: str, 
     output_dir: str, 
-    num_real: int = 10, 
-    num_yt: int = 10, 
-    num_synth: int = 20
+    num_real: int = 20, 
+    num_yt: int = 20, 
+    num_synth: int = 40
 ) -> List[str]:
-    """Selectively extract representative and challenging videos from Celeb-DF zip."""
+    """
+    Selectively extract representative, diverse, and challenging videos from Celeb-DF zip:
+      1. Celeb-real: Diverse distribution across distinct celebrity IDs (id0, id1, id2, ...)
+         rather than repeatedly picking the same celebrity.
+      2. Celeb-synthesis: Balanced face-swap pairs including:
+         - Videos where id0 (Aamir Khan) is the donor face (*_id0_*.mp4)
+         - Videos where id0 is the target video (id0_*_*.mp4)
+         - Balanced cross-celebrity swaps across different identities (id1_id2, id2_id3, ...)
+      3. YouTube-real: Evenly spaced sampling across unconstrained wild/crowd videos.
+    """
     extracted_files = []
     logger.info(f"Scanning archive {zip_path} for potential hard cases...")
     
@@ -73,16 +82,65 @@ def selective_extract_hard_cases(
         
         logger.info(f"Archive contains: {len(celeb_real)} Celeb-real, {len(yt_real)} YouTube-real, {len(celeb_synth)} Celeb-synthesis videos.")
         
-        # Pick diverse selection
-        # For Celeb-real: pick across different celebrity IDs (id0, id1, id2, ...)
-        selected_real = celeb_real[:num_real]
-        # For YouTube-real: unconstrained real scenes with crowds, interviews, varying lighting
-        selected_yt = yt_real[:num_yt] if yt_real else []
-        # For Celeb-synthesis: corresponding swaps
-        selected_synth = celeb_synth[:num_synth]
-        
+        # 1. Diverse Celeb-real: round-robin across distinct celebrity IDs
+        real_by_id = {}
+        for m in celeb_real:
+            base = os.path.basename(m)
+            cid = base.split('_')[0]
+            real_by_id.setdefault(cid, []).append(m)
+
+        selected_real = []
+        cids = sorted(list(real_by_id.keys()), key=lambda x: int(x.replace('id', '')) if x.replace('id', '').isdigit() else 999)
+        while len(selected_real) < num_real and any(real_by_id.values()):
+            for cid in cids:
+                if real_by_id[cid]:
+                    selected_real.append(real_by_id[cid].pop(0))
+                    if len(selected_real) >= num_real:
+                        break
+
+        # 2. Diverse YouTube-real: evenly spaced sampling across unconstrained wild footage
+        selected_yt = []
+        if yt_real and num_yt > 0:
+            import numpy as np
+            indices = np.linspace(0, len(yt_real) - 1, min(num_yt, len(yt_real)), dtype=int)
+            selected_yt = [yt_real[i] for i in indices]
+
+        # 3. Diverse Celeb-synthesis:
+        # Guarantee inclusion of donor videos for id0 (where id0 face was stolen & grafted onto other bodies)
+        id0_donor = [m for m in celeb_synth if '_id0_' in os.path.basename(m)]
+        id0_target = [m for m in celeb_synth if os.path.basename(m).startswith('id0_')]
+        other_swaps = [m for m in celeb_synth if '_id0_' not in os.path.basename(m) and not os.path.basename(m).startswith('id0_')]
+
+        selected_synth = []
+        # Allocate up to 25% id0 donor swaps (where Aamir Khan is the swapped face!)
+        n_donor = min(len(id0_donor), max(1, num_synth // 4))
+        selected_synth.extend(id0_donor[:n_donor])
+
+        # Allocate up to 25% id0 target swaps (where Aamir Khan's body is the base!)
+        n_target = min(len(id0_target), max(1, num_synth // 4))
+        selected_synth.extend(id0_target[:n_target])
+
+        # Fill remaining slots with diverse cross-celebrity swaps across different identity pairs
+        pair_groups = {}
+        for m in other_swaps:
+            base = os.path.basename(m)
+            parts = base.split('_')
+            if len(parts) >= 2:
+                pair = (parts[0], parts[1])
+                pair_groups.setdefault(pair, []).append(m)
+
+        while len(selected_synth) < num_synth and any(pair_groups.values()):
+            for pair in list(pair_groups.keys()):
+                if pair_groups[pair]:
+                    selected_synth.append(pair_groups[pair].pop(0))
+                    if len(selected_synth) >= num_synth:
+                        break
+
         to_extract = selected_real + selected_yt + selected_synth
-        logger.info(f"Extracting {len(to_extract)} targeted videos into {output_dir}...")
+        logger.info(f"Extracting {len(to_extract)} diverse videos into {output_dir}: "
+                    f"{len(selected_real)} Celeb-real (distinct actors), "
+                    f"{len(selected_yt)} YouTube-real, "
+                    f"{len(selected_synth)} Celeb-synthesis (including {n_donor} id0 donor swaps)...")
         
         for member in to_extract:
             zf.extract(member, output_dir)
@@ -97,9 +155,9 @@ def main():
     parser.add_argument("--file-id", type=str, default=None, help="Custom Google Drive file ID (e.g. from a personal 'Make a Copy' to bypass global quota).")
     parser.add_argument("--output-dir", type=str, default="/kaggle/working/data_celebdf", help="Target extraction directory.")
     parser.add_argument("--zip-path", type=str, default=None, help="Path to already downloaded zip (if any).")
-    parser.add_argument("--num-real", type=int, default=10, help="Number of Celeb-real videos.")
-    parser.add_argument("--num-yt", type=int, default=10, help="Number of YouTube-real unconstrained/crowd videos.")
-    parser.add_argument("--num-synth", type=int, default=20, help="Number of Celeb-synthesis face-swap videos.")
+    parser.add_argument("--num-real", type=int, default=20, help="Number of Celeb-real videos (distributed across distinct actors).")
+    parser.add_argument("--num-yt", type=int, default=20, help="Number of YouTube-real unconstrained/crowd videos.")
+    parser.add_argument("--num-synth", type=int, default=40, help="Number of Celeb-synthesis face-swap videos (including donor & target combinations).")
     parser.add_argument("--keep-zip", action="store_true", help="Do not delete the downloaded zip.")
     args = parser.parse_args()
 
