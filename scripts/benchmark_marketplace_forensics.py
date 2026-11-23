@@ -188,11 +188,19 @@ def plot_benchmark_dashboard(
         ax3.set_xticklabels([m for m in models], fontweight="bold")
         ax3.axhline(0.50, color="black", linestyle=":", lw=1.5, label="Default Threshold (0.50)")
         if calibrated_by_model:
-            # Highlight optimal threshold of highest-AUC model (typically GenD PE-L)
-            best_m = max(metrics_by_model.keys(), key=lambda k: metrics_by_model[k].get("roc_auc", 0.0))
-            best_t = calibrated_by_model.get(best_m, {}).get("optimal_threshold")
-            if best_t:
-                ax3.axhline(best_t, color="#1976D2", linestyle="--", lw=2.0, label=f"Calibrated T* ({best_m}: {best_t:.2f})")
+            labeled = False
+            for i, m_name in enumerate(models):
+                c_data = calibrated_by_model.get(m_name)
+                if c_data and "optimal_threshold" in c_data:
+                    t_val = c_data["optimal_threshold"]
+                    cx = 1.4 + i * 2.2
+                    lbl = "Calibrated Optimal T*" if not labeled else None
+                    labeled = True
+                    ax3.hlines(t_val, cx - 0.70, cx + 0.70, colors="#1976D2", linestyles="--", lw=2.2, label=lbl)
+                    y_text = t_val - 0.045 if t_val > 0.85 else t_val + 0.025
+                    va = "top" if t_val > 0.85 else "bottom"
+                    ax3.text(cx, y_text, f"T*={t_val:.2f}", color="#0D47A1", ha="center", va=va, fontsize=8, fontweight="bold",
+                             bbox=dict(boxstyle="round,pad=0.15", facecolor="white", edgecolor="#1976D2", alpha=0.88, lw=0.8))
         ax3.set_ylabel("Manipulation Score p(Fake)", fontweight="bold")
         ax3.set_title("PREDICTION DISTRIBUTIONS: REAL (Green) vs FAKE (Red)", fontsize=12, fontweight="bold", pad=10)
         ax3.grid(axis="y", linestyle="--", alpha=0.5)
