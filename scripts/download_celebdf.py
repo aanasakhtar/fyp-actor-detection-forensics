@@ -158,7 +158,8 @@ def main():
     parser.add_argument("--num-real", type=int, default=20, help="Number of Celeb-real videos (distributed across distinct actors).")
     parser.add_argument("--num-yt", type=int, default=20, help="Number of YouTube-real unconstrained/crowd videos.")
     parser.add_argument("--num-synth", type=int, default=40, help="Number of Celeb-synthesis face-swap videos (including donor & target combinations).")
-    parser.add_argument("--keep-zip", action="store_true", help="Do not delete the downloaded zip.")
+    parser.add_argument("--keep-zip", action="store_true", default=True, help="Preserve the downloaded zip archive on disk (default: True).")
+    parser.add_argument("--delete-zip", action="store_true", default=False, help="Explicitly delete the zip archive after extraction to free disk space.")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -195,13 +196,15 @@ def main():
         logger.error(f"Error during extraction: {e}")
         return
 
-    # Step 3: Cleanup zip file to preserve Kaggle disk space
-    if not args.keep_zip and os.path.exists(zip_file):
+    # Step 3: Cleanup or preserve zip file
+    if args.delete_zip and os.path.exists(zip_file):
         try:
             os.remove(zip_file)
             logger.info(f"Removed archive {zip_file} to preserve Kaggle disk space.")
         except Exception as e:
             logger.warning(f"Could not remove {zip_file}: {e}")
+    else:
+        logger.info(f"Preserved archive {zip_file} on notebook disk for subsequent runs and re-extractions.")
 
 
 if __name__ == "__main__":
