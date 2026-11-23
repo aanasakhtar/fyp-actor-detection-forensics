@@ -166,20 +166,24 @@ def plot_benchmark_dashboard(
     y_pos = np.arange(len(models))
     
     # Stacked horizontal bar: Stage 1 + Stage 2 + Stage 3
-    ax4.barh(y_pos, [det_time] * len(models), height=0.45, label="SCRFD Face Detection", color="#607D8B", alpha=0.85)
-    ax4.barh(y_pos, [arc_time] * len(models), left=[det_time] * len(models), height=0.45, label="ArcFace Biometrics", color="#009688", alpha=0.85)
-    ax4.barh(y_pos, inf_times, left=[det_time + arc_time] * len(models), height=0.45, label="Forensic Model Forward", color="#FF9800", alpha=0.85)
+    ax4.barh(y_pos, [det_time] * len(models), height=0.45, label=f"Stage 1: SCRFD Detection ({det_time:.1f} ms)", color="#607D8B", alpha=0.85)
+    ax4.barh(y_pos, [arc_time] * len(models), left=[det_time] * len(models), height=0.45, label=f"Stage 2: ArcFace Biometrics ({arc_time:.1f} ms)", color="#009688", alpha=0.85)
+    ax4.barh(y_pos, inf_times, left=[det_time + arc_time] * len(models), height=0.45, label="Stage 3: Deepfake Forensics", color="#FF9800", alpha=0.85)
 
+    max_tot = 0.0
     for i, m in enumerate(models):
         tot = det_time + arc_time + inf_times[i]
+        if tot > max_tot:
+            max_tot = tot
         fps = 1000.0 / tot if tot > 0 else 0.0
-        ax4.text(tot + 2, i, f"Total: {tot:.1f} ms ({fps:.1f} FPS)", va="center", fontweight="bold", fontsize=9)
+        ax4.text(tot + 5, i, f"Total: {tot:.1f} ms  ({fps:.1f} FPS)\n[S3: {inf_times[i]:.1f} ms]", va="center", fontweight="bold", fontsize=8.5)
 
+    ax4.set_xlim(0, max(100.0, max_tot * 1.35))
     ax4.set_yticks(y_pos)
     ax4.set_yticklabels(models, fontweight="bold")
     ax4.set_xlabel("Latency per Frame (Milliseconds - Lower is Faster)", fontweight="bold")
-    ax4.set_title("PIPELINE LATENCY BREAKDOWN (Stages 1, 2, 3)", fontsize=12, fontweight="bold", pad=10)
-    ax4.legend(loc="lower right")
+    ax4.set_title("END-TO-END PIPELINE LATENCY BREAKDOWN (Stages 1, 2, 3)", fontsize=12, fontweight="bold", pad=10)
+    ax4.legend(loc="lower right", framealpha=0.92)
     ax4.grid(axis="x", linestyle="--", alpha=0.5)
 
     plt.suptitle("TALENT MARKETPLACE: COMPREHENSIVE AI FORENSICS & LATENCY BENCHMARK", fontsize=15, fontweight="bold", y=0.98)
@@ -237,15 +241,49 @@ def main():
         logger.error("Please check if the dataset has finished mounting in Kaggle's 'Input' pane.")
         return
 
-    # Select balanced sample if max_videos is specified
+    # Select balanced, identity-diverse sample if max_videos is specified
     eval_videos = loader.videos
     if args.max_videos and len(eval_videos) > args.max_videos:
         reals = [v for v in loader.videos if not v.is_fake]
         fakes = [v for v in loader.videos if v.is_fake]
         n_half = args.max_videos // 2
         rng = np.random.RandomState(42)
-        sample_reals = list(rng.choice(reals, min(len(reals), n_half), replace=False)) if reals else []
-        sample_fakes = list(rng.choice(fakes, min(len(fakes), args.max_videos - len(sample_reals)), replace=False)) if fakes else []
+
+        # Diverse real sampling across distinct actor IDs
+        reals_by_id: Dict[str, List[Any]] = {}
+        for r in reals:
+            reals_by_id.setdefault(r.target_id, []).append(r)
+        distinct_real_ids = sorted(list(reals_by_id.keys()))
+        rng.shuffle(distinct_real_ids)
+        
+        sample_reals = []
+        idx = 0
+        while len(sample_reals) < min(len(reals), n_half) and distinct_real_ids:
+            cur_id = distinct_real_ids[idx % len(distinct_real_ids)]
+            if reals_by_id[cur_id]:
+                sample_reals.append(reals_by_id[cur_id].pop(0))
+            idx += 1
+            if all(len(v) == 0 for v in reals_by_id.values()):
+                break
+
+        # Diverse fake sampling across distinct actor combinations
+        fakes_by_id: Dict[str, List[Any]] = {}
+        for f in fakes:
+            fakes_by_id.setdefault(f.target_id, []).append(f)
+        distinct_fake_ids = sorted(list(fakes_by_id.keys()))
+        rng.shuffle(distinct_fake_ids)
+        
+        sample_fakes = []
+        idx = 0
+        n_fakes_target = args.max_videos - len(sample_reals)
+        while len(sample_fakes) < min(len(fakes), n_fakes_target) and distinct_fake_ids:
+            cur_id = distinct_fake_ids[idx % len(distinct_fake_ids)]
+            if fakes_by_id[cur_id]:
+                sample_fakes.append(fakes_by_id[cur_id].pop(0))
+            idx += 1
+            if all(len(v) == 0 for v in fakes_by_id.values()):
+                break
+
         eval_videos = sample_reals + sample_fakes
 
     n_real = sum(1 for v in eval_videos if not v.is_fake)
@@ -346,8 +384,9 @@ def main():
             "latency_sec": round(t_vid_elapsed, 3)
         })
 
-        if (v_idx + 1) % 5 == 0 or (v_idx + 1) == len(eval_videos):
-            print(f"  [{v_idx+1:02d}/{len(eval_videos):02d}] {meta.category:16s} | "
+        log_step = 10 if len(eval_videos) > 60 else 5
+        if (v_idx + 1) % log_step == 0 or (v_idx + 1) == len(eval_videos):
+            print(f"  [{v_idx+1:03d}/{len(eval_videos):03d}] {meta.category:16s} | "
                   f"True: {'FAKE' if meta.is_fake else 'REAL':4s} | " + 
                   " | ".join([f"{m[:12]}: {vid_scores.get(m, 0.0):.4f}" for m in forensic_models]))
 
@@ -378,23 +417,38 @@ def main():
         tot_ms = avg_det_ms + avg_arc_ms + avg_inf_ms
         fps = 1000.0 / tot_ms if tot_ms > 0 else 0.0
         timing_stats["models"][m_name] = {
+            "stage_1_detection_ms": round(avg_det_ms, 2),
+            "stage_2_biometrics_ms": round(avg_arc_ms, 2),
+            "stage_3_forensic_ms": round(avg_inf_ms, 2),
             "avg_inference_ms": round(avg_inf_ms, 2),
             "total_frame_ms": round(tot_ms, 2),
             "effective_fps": round(fps, 1)
         }
 
-    # 5. Print Markdown Performance Table
-    print("\n" + "="*100)
-    print("                 COMPREHENSIVE BENCHMARK RESULTS & METRICS SUMMARY")
-    print("="*100)
-    print(f"{'Forensic Detector':24s} | {'ROC-AUC':7s} | {'Accuracy':8s} | {'Recall':6s} | {'Precision':9s} | {'FPR (Real)':10s} | {'Latency':8s} | {'Throughput':10s}")
-    print("-" * 100)
-    for m_name, m_data in metrics_by_model.items():
+    # 5. Print Detailed Markdown Tables
+    print("\n" + "="*112)
+    print("                     TABLE 1: STAGE-BY-STAGE PIPELINE LATENCY & THROUGHPUT")
+    print("="*112)
+    print(f"{'Forensic Detector':24s} | {'Stage 1: SCRFD':14s} | {'Stage 2: ArcFace':16s} | {'Stage 3: Forensic':17s} | {'Total Frame':12s} | {'Throughput':10s}")
+    print("-" * 112)
+    for m_name in forensic_models:
         t_data = timing_stats["models"].get(m_name, {})
-        lat = f"{t_data.get('avg_inference_ms', 0):.1f} ms"
+        s1 = f"{t_data.get('stage_1_detection_ms', 0):.1f} ms"
+        s2 = f"{t_data.get('stage_2_biometrics_ms', 0):.1f} ms"
+        s3 = f"{t_data.get('stage_3_forensic_ms', 0):.1f} ms"
+        tot = f"{t_data.get('total_frame_ms', 0):.1f} ms"
         fps = f"{t_data.get('effective_fps', 0):.1f} FPS"
-        print(f"{m_name:24s} | {m_data['roc_auc']:7.4f} | {m_data['accuracy']*100:6.1f} % | {m_data['recall']*100:5.1f}% | {m_data['precision']*100:7.1f}% | {m_data['fpr_on_real']*100:7.1f} % | {lat:8s} | {fps:10s}")
-    print("="*100 + "\n")
+        print(f"{m_name:24s} | {s1:>14s} | {s2:>16s} | {s3:>17s} | {tot:>12s} | {fps:>10s}")
+    print("="*112)
+
+    print("\n" + "="*104)
+    print("                     TABLE 2: COMPREHENSIVE FORENSIC ACCURACY & METRICS SUMMARY")
+    print("="*104)
+    print(f"{'Forensic Detector':24s} | {'ROC-AUC':7s} | {'Accuracy':8s} | {'Recall':6s} | {'Precision':9s} | {'FPR (Real)':10s} | {'F1 Score':8s}")
+    print("-" * 104)
+    for m_name, m_data in metrics_by_model.items():
+        print(f"{m_name:24s} | {m_data['roc_auc']:7.4f} | {m_data['accuracy']*100:6.1f} % | {m_data['recall']*100:5.1f}% | {m_data['precision']*100:7.1f}% | {m_data['fpr_on_real']*100:7.1f} % | {m_data.get('f1', 0.0):7.4f}")
+    print("="*104 + "\n")
 
     # 6. Generate 4-Panel Executive Diagnostic Report Card
     report_img_path = os.path.join(args.output_dir, "marketplace_forensic_benchmark.png")
