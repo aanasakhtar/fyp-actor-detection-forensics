@@ -13,7 +13,7 @@ import sys
 import time
 import argparse
 import json
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
