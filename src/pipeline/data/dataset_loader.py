@@ -43,10 +43,11 @@ class FFppDatasetLoader:
                 "Deepfakes", "Face2Face", "FaceSwap", "NeuralTextures", "FaceShifter", 
                 "DeepFakeDetection", "Celeb-real", "Celeb-synthesis", "YouTube-real"
             ]:
-                if cat in parts:
+                cat_norm = cat.lower().replace("-", "").replace("_", "")
+                if any(cat_norm == p.lower().replace("-", "").replace("_", "") for p in parts):
                     category = cat
                     break
-            if ("youtube" in parts or "original_sequences" in parts) and "Celeb-real" not in parts and "YouTube-real" not in parts:
+            if any(p.lower() in ["youtube", "original_sequences"] for p in parts) and category not in ["Celeb-real", "YouTube-real"]:
                 category = "original"
                 
             meta = parse_pair_mapping(filepath, category=category, compression=compression)
