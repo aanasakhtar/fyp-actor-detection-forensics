@@ -72,12 +72,47 @@ def init_forensic_models(model_names: List[str]) -> Dict[str, Any]:
     return active_models
 
 
+def find_optimal_threshold(y_true: List[int], scores: List[float]) -> Dict[str, Any]:
+    """Find optimal decision threshold maximizing Youden's J statistic (TPR - FPR)."""
+    fpr, tpr, thresholds = roc_curve(y_true, scores)
+    j_scores = tpr - fpr
+    best_idx = int(np.argmax(j_scores))
+    opt_thresh = float(thresholds[best_idx])
+    
+    # Clip to valid probability bounds [0.10, 0.92]
+    opt_thresh = max(0.10, min(0.92, opt_thresh))
+    
+    pred = (np.array(scores) >= opt_thresh).astype(int)
+    y_arr = np.array(y_true)
+    
+    acc = float(np.mean(pred == y_arr))
+    tp = int(np.sum((pred == 1) & (y_arr == 1)))
+    fp = int(np.sum((pred == 1) & (y_arr == 0)))
+    tn = int(np.sum((pred == 0) & (y_arr == 0)))
+    fn = int(np.sum((pred == 0) & (y_arr == 1)))
+    
+    rec = float(tp / max(1, (tp + fn)))
+    prec = float(tp / max(1, (tp + fp)))
+    fpr_real = float(fp / max(1, (fp + tn)))
+    f1 = float(2 * prec * rec / max(1e-6, (prec + rec)))
+    
+    return {
+        "optimal_threshold": round(opt_thresh, 3),
+        "calibrated_accuracy": round(acc, 4),
+        "calibrated_recall": round(rec, 4),
+        "calibrated_precision": round(prec, 4),
+        "calibrated_fpr_on_real": round(fpr_real, 4),
+        "calibrated_f1": round(f1, 4)
+    }
+
+
 def plot_benchmark_dashboard(
     metrics_by_model: Dict[str, Dict[str, Any]],
     timing_stats: Dict[str, Dict[str, float]],
     labels_true: List[int],
     scores_by_model: Dict[str, List[float]],
-    save_path: str
+    save_path: str,
+    calibrated_by_model: Optional[Dict[str, Dict[str, Any]]] = None
 ):
     """Render 4-panel executive diagnostic figure."""
     fig, axes = plt.subplots(2, 2, figsize=(16, 12), dpi=150)
@@ -151,7 +186,13 @@ def plot_benchmark_dashboard(
             patch.set_alpha(0.75)
         ax3.set_xticks([1.4 + i * 2.2 for i in range(len(models))])
         ax3.set_xticklabels([m for m in models], fontweight="bold")
-        ax3.axhline(0.50, color="black", linestyle=":", lw=1.5, label="Decision Threshold (0.50)")
+        ax3.axhline(0.50, color="black", linestyle=":", lw=1.5, label="Default Threshold (0.50)")
+        if calibrated_by_model:
+            # Highlight optimal threshold of highest-AUC model (typically GenD PE-L)
+            best_m = max(metrics_by_model.keys(), key=lambda k: metrics_by_model[k].get("roc_auc", 0.0))
+            best_t = calibrated_by_model.get(best_m, {}).get("optimal_threshold")
+            if best_t:
+                ax3.axhline(best_t, color="#1976D2", linestyle="--", lw=2.0, label=f"Calibrated T* ({best_m}: {best_t:.2f})")
         ax3.set_ylabel("Manipulation Score p(Fake)", fontweight="bold")
         ax3.set_title("PREDICTION DISTRIBUTIONS: REAL (Green) vs FAKE (Red)", fontsize=12, fontweight="bold", pad=10)
         ax3.grid(axis="y", linestyle="--", alpha=0.5)
@@ -394,8 +435,9 @@ def main():
                   f"True: {'FAKE' if meta.is_fake else 'REAL':4s} | " + 
                   " | ".join([f"{m[:12]}: {vid_scores.get(m, 0.0):.4f}" for m in forensic_models]))
 
-    # 3. Compute Metrics
+    # 3. Compute Metrics (Uncalibrated @ 0.50 and Calibrated @ Optimal T*)
     metrics_by_model = {}
+    calibrated_by_model = {}
     for m_name in forensic_models:
         m_dict = compute_forensic_metrics(labels_true, scores_by_model[m_name], threshold=0.50)
         # Compute False Positive Rate (FPR) on Real videos
@@ -404,6 +446,7 @@ def main():
         fpr = fp / max(1, (fp + tn))
         m_dict["fpr_on_real"] = round(fpr, 4)
         metrics_by_model[m_name] = m_dict
+        calibrated_by_model[m_name] = find_optimal_threshold(labels_true, scores_by_model[m_name])
 
     # 4. Latency Statistics
     avg_det_ms = (total_det_time / max(1, total_frames_processed)) * 1000.0
@@ -446,13 +489,22 @@ def main():
     print("="*112)
 
     print("\n" + "="*104)
-    print("                     TABLE 2: COMPREHENSIVE FORENSIC ACCURACY & METRICS SUMMARY")
+    print("                     TABLE 2: DEFAULT FORENSIC PERFORMANCE (THRESHOLD = 0.50)")
     print("="*104)
     print(f"{'Forensic Detector':24s} | {'ROC-AUC':7s} | {'Accuracy':8s} | {'Recall':6s} | {'Precision':9s} | {'FPR (Real)':10s} | {'F1 Score':8s}")
     print("-" * 104)
     for m_name, m_data in metrics_by_model.items():
         print(f"{m_name:24s} | {m_data['roc_auc']:7.4f} | {m_data['accuracy']*100:6.1f} % | {m_data['recall']*100:5.1f}% | {m_data['precision']*100:7.1f}% | {m_data['fpr_on_real']*100:7.1f} % | {m_data.get('f1', 0.0):7.4f}")
-    print("="*104 + "\n")
+    print("="*104)
+
+    print("\n" + "="*124)
+    print("                     TABLE 3: CALIBRATED FORENSIC PERFORMANCE (OPTIMAL THRESHOLD T*)")
+    print("="*124)
+    print(f"{'Forensic Detector':24s} | {'Optimal T*':11s} | {'Calibrated Acc':15s} | {'Recall':8s} | {'Precision':10s} | {'FPR (Real)':11s} | {'F1 Score':8s}")
+    print("-" * 124)
+    for m_name, c_data in calibrated_by_model.items():
+        print(f"{m_name:24s} | {c_data['optimal_threshold']:11.3f} | {c_data['calibrated_accuracy']*100:13.1f} % | {c_data['calibrated_recall']*100:6.1f} % | {c_data['calibrated_precision']*100:8.1f} % | {c_data['calibrated_fpr_on_real']*100:9.1f} % | {c_data['calibrated_f1']:8.4f}")
+    print("="*124 + "\n")
 
     # 6. Generate 4-Panel Executive Diagnostic Report Card
     report_img_path = os.path.join(args.output_dir, "marketplace_forensic_benchmark.png")
@@ -461,7 +513,8 @@ def main():
         timing_stats=timing_stats,
         labels_true=labels_true,
         scores_by_model=scores_by_model,
-        save_path=report_img_path
+        save_path=report_img_path,
+        calibrated_by_model=calibrated_by_model
     )
 
     # 7. Save JSON Export
@@ -472,7 +525,8 @@ def main():
             "videos_evaluated": len(eval_videos),
             "real_videos": n_real,
             "fake_videos": n_fake,
-            "metrics": metrics_by_model,
+            "metrics_at_0_50": metrics_by_model,
+            "calibrated_metrics": calibrated_by_model,
             "timing_benchmarks": timing_stats,
             "per_video_records": video_records
         }, jf, indent=2)
