@@ -291,7 +291,11 @@ def main():
     parser.add_argument("--gend-backbone", type=str, default=None, help="Legacy alias for --forensic-model (e.g. 'pe', 'clip', 'dinov3').")
     parser.add_argument("--output-dir", type=str, default="/kaggle/working/results/marketplace_demo")
     parser.add_argument("--threshold", type=float, default=0.55, help="ArcFace cosine similarity decision threshold.")
+    parser.add_argument("--hf-token", type=str, default=None, help="Hugging Face User Access Token (optional if HF_TOKEN env is set).")
     args = parser.parse_args()
+
+    if args.hf_token:
+        os.environ["HF_TOKEN"] = args.hf_token
 
     os.makedirs(args.output_dir, exist_ok=True)
 

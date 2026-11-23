@@ -134,7 +134,11 @@ def main():
     parser.add_argument("--max-videos", type=int, default=80, help="Maximum number of videos to evaluate.")
     parser.add_argument("--max-frames", type=int, default=10, help="Uniform sampled frames per video.")
     parser.add_argument("--output-dir", type=str, default="/kaggle/working/results/fakeavceleb_benchmark", help="Output directory.")
+    parser.add_argument("--hf-token", type=str, default=None, help="Hugging Face User Access Token (optional if HF_TOKEN env is set).")
     args = parser.parse_args()
+
+    if args.hf_token:
+        os.environ["HF_TOKEN"] = args.hf_token
 
     os.makedirs(args.output_dir, exist_ok=True)
 
