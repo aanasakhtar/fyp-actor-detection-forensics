@@ -24,7 +24,10 @@ src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if src_dir not in sys.path:
     sys.path.insert(0, src_dir)
 
+from pipeline.detection.scrfd_detector import SCRFDDetector
+from pipeline.preprocessing.face_alignment import align_face_5point, align_face_gend
 from pipeline.preprocessing.face_cropping import crop_context_face
+from pipeline.recognition.arcface_encoder import ArcFaceEncoder
 from pipeline.forensics.vit_detector import ViTDeepfakeDetector
 from pipeline.forensics.sbi_detector import SBIEfficientNetDetector
 from pipeline.forensics.clip_detector import GenDCLIPDetector
@@ -134,7 +137,9 @@ def main():
         logger.error("No image records found. Exiting.")
         return
 
-    # 2. Initialize Models
+    # 2. Initialize Engines (Stages 1, 2, 3)
+    detector = SCRFDDetector(conf_threshold=0.35)
+    encoder = ArcFaceEncoder()
     forensic_models = init_forensic_models(args.models)
     if not forensic_models:
         logger.error("No active forensic models loaded. Exiting.")
@@ -146,10 +151,13 @@ def main():
 
     scores_by_model: Dict[str, List[float]] = {m: [] for m in forensic_models}
     labels_true: List[int] = []
+    
+    total_det_time = 0.0
+    total_arc_time = 0.0
     total_model_times = {m: 0.0 for m in forensic_models}
     total_images_processed = 0
 
-    print(f"\nEvaluating {len(records)} Indian face images across {len(forensic_models)} models...")
+    print(f"\nEvaluating {len(records)} Indian face images across full 3-stage pipeline ({len(forensic_models)} forensic models)...")
 
     for idx, item in enumerate(records):
         try:
@@ -168,10 +176,41 @@ def main():
         total_images_processed += 1
         labels_true.append(1 if item["is_fake"] else 0)
 
+        # Stage 1: SCRFD Face & Landmark Detection
+        t0 = time.time()
+        dets = detector.detect_frame(img_bgr)
+        total_det_time += (time.time() - t0)
+
+        # Stage 2: ArcFace Biometrics & Canonical Alignment
+        aligned_face = None
+        primary_det = None
+        if dets:
+            primary_det = max(dets, key=lambda d: (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]))
+            if primary_det.landmarks_5 is not None:
+                aligned_face = align_face_5point(img_bgr, primary_det.landmarks_5)
+                if aligned_face is not None:
+                    t0 = time.time()
+                    encoder.extract_embedding(aligned_face)
+                    total_arc_time += (time.time() - t0)
+
+        # Stage 3: Deepfake Forensic Evaluation
         step_scores = {}
         for m_name, model in forensic_models.items():
+            # Tailor input crop according to model architecture
+            if primary_det is not None:
+                if "vit" in m_name.lower():
+                    c = crop_context_face(img_bgr, primary_det.bbox, expansion_factor=1.20, target_size=(224, 224))
+                elif "efficientnet" in m_name.lower() or "sbi" in m_name.lower():
+                    c = crop_context_face(img_bgr, primary_det.bbox, expansion_factor=1.15, target_size=(380, 380))
+                else:  # GenD models
+                    c = align_face_gend(img_bgr, primary_det.landmarks_5, target_size=(224, 224), scale=1.30)
+                    if c is None:
+                        c = crop_context_face(img_bgr, primary_det.bbox, target_size=(224, 224))
+            else:
+                c = cv2.resize(img_bgr, (224, 224))
+
             t0 = time.time()
-            score_list = model.predict_crops([img_bgr])
+            score_list = model.predict_crops([c])
             elapsed = time.time() - t0
             total_model_times[m_name] += elapsed
 
@@ -194,25 +233,41 @@ def main():
         metrics_by_model[m_name] = m_dict
 
     # 5. Timing Statistics
-    timing_stats = {}
+    avg_det_ms = (total_det_time / max(1, total_images_processed)) * 1000.0
+    avg_arc_ms = (total_arc_time / max(1, total_images_processed)) * 1000.0
+    timing_stats = {
+        "avg_detection_ms": round(avg_det_ms, 2),
+        "avg_embedding_ms": round(avg_arc_ms, 2),
+        "models": {}
+    }
+
     for m_name in forensic_models:
-        avg_ms = (total_model_times[m_name] / max(1, total_images_processed)) * 1000.0
-        fps = 1000.0 / avg_ms if avg_ms > 0 else 0.0
-        timing_stats[m_name] = {
-            "avg_inference_ms": round(avg_ms, 2),
-            "throughput_fps": round(fps, 1)
+        avg_inf_ms = (total_model_times[m_name] / max(1, total_images_processed)) * 1000.0
+        tot_ms = avg_det_ms + avg_arc_ms + avg_inf_ms
+        fps = 1000.0 / tot_ms if tot_ms > 0 else 0.0
+        timing_stats["models"][m_name] = {
+            "stage_1_detection_ms": round(avg_det_ms, 2),
+            "stage_2_biometrics_ms": round(avg_arc_ms, 2),
+            "stage_3_forensic_ms": round(avg_inf_ms, 2),
+            "total_frame_ms": round(tot_ms, 2),
+            "effective_fps": round(fps, 1)
         }
 
     # 6. Print Console Tables
-    print("\n" + "="*96)
-    print("                TABLE 1: SOUTH ASIAN FACE FORENSIC INFERENCE LATENCY")
-    print("="*96)
-    print(f"{'Forensic Detector':26s} | {'Inference Latency':20s} | {'Throughput':20s}")
-    print("-" * 96)
+    print("\n" + "="*112)
+    print("                     TABLE 1: STAGE-BY-STAGE PIPELINE LATENCY & THROUGHPUT")
+    print("="*112)
+    print(f"{'Forensic Detector':24s} | {'Stage 1: SCRFD':14s} | {'Stage 2: ArcFace':16s} | {'Stage 3: Forensic':17s} | {'Total Frame':12s} | {'Throughput':10s}")
+    print("-" * 112)
     for m_name in forensic_models:
-        t = timing_stats[m_name]
-        print(f"{m_name:26s} | {t['avg_inference_ms']:17.1f} ms | {t['throughput_fps']:16.1f} faces/sec")
-    print("="*96)
+        t_data = timing_stats["models"].get(m_name, {})
+        s1 = f"{t_data.get('stage_1_detection_ms', 0):.1f} ms"
+        s2 = f"{t_data.get('stage_2_biometrics_ms', 0):.1f} ms"
+        s3 = f"{t_data.get('stage_3_forensic_ms', 0):.1f} ms"
+        tot = f"{t_data.get('total_frame_ms', 0):.1f} ms"
+        fps = f"{t_data.get('effective_fps', 0):.1f} FPS"
+        print(f"{m_name:24s} | {s1:>14s} | {s2:>16s} | {s3:>17s} | {tot:>12s} | {fps:>10s}")
+    print("="*112)
 
     print("\n" + "="*104)
     print("                TABLE 2: SOUTH ASIAN ACCURACY & DIAGNOSTIC METRICS SUMMARY")
