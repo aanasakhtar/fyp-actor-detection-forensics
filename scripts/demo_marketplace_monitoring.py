@@ -147,6 +147,7 @@ def fetch_official_tmdb_talent(
             "max_sim": best_item["sim"],
             "all_sims": [g["sim"] for g in gallery_items],
             "num_headshots": len(gallery_items),
+            "gallery_items": gallery_items,
             "source": f"Official TMDB Multi-Headshot Gallery ({len(gallery_items)} images)"
         }
     except Exception as e:
@@ -278,6 +279,34 @@ def generate_audit_card(
     plt.savefig(save_path, bbox_inches="tight")
     plt.close(fig)
     print(f"\n[+] Saved Executive Audit Report Card to: {save_path}")
+
+
+def generate_portfolio_gallery_card(gallery_items: list, actor_name: str, best_sim: float, save_path: str):
+    """Render a clean multi-image portfolio gallery of all enrolled studio portraits with likeness scores."""
+    n = len(gallery_items)
+    fig, axes = plt.subplots(1, n, figsize=(4.5 * n, 5.5), dpi=150)
+    if n == 1:
+        axes = [axes]
+
+    for i, (ax, item) in enumerate(zip(axes, gallery_items)):
+        ax.imshow(item["image_pil"])
+        sim = item.get("sim", 0.0)
+        is_best = abs(sim - best_sim) < 1e-4
+        border_col = "#2E7D32" if is_best else "#1976D2"
+        badge = "\n★ [BEST PROTOTYPE MATCH]" if is_best else ""
+        ax.set_title(f"Headshot {i+1}/{n}\nLikeness: {sim:.4f}{badge}",
+                     fontsize=10.5, fontweight="bold", color=border_col, pad=8)
+        ax.axis("off")
+        for spine in ax.spines.values():
+            spine.set_edgecolor(border_col)
+            spine.set_linewidth(3 if is_best else 1)
+
+    plt.suptitle(f"REGISTERED TALENT PORTFOLIO GALLERY: {actor_name.upper()} (TMDB)", fontsize=13, fontweight="bold", y=0.98)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[+] Saved Portfolio Gallery Overview to: {save_path}")
 
 
 def main():
@@ -517,6 +546,28 @@ def main():
         save_path=report_path,
         backbone_label=forensic_label
     )
+
+    # 8. Export All Enrolled Portfolio Headshots and Multi-Headshot Card
+    gallery_items = enrolled_data.get("gallery_items")
+    if gallery_items:
+        portfolio_dir = os.path.join(args.output_dir, "tmdb_portfolio")
+        os.makedirs(portfolio_dir, exist_ok=True)
+        best_sim = enrolled_data.get("max_sim", 0.0)
+        for idx, item in enumerate(gallery_items):
+            sim_val = item.get("sim", 0.0)
+            is_best_flag = abs(sim_val - best_sim) < 1e-4
+            suffix = "_BEST_MATCH" if is_best_flag else ""
+            img_file = os.path.join(portfolio_dir, f"headshot_{idx+1}_sim_{sim_val:.4f}{suffix}.jpg")
+            item["image_pil"].save(img_file)
+
+        gallery_card_path = os.path.join(args.output_dir, f"tmdb_portfolio_gallery_{enrolled_data.get('name', 'talent').replace(' ', '_').lower()}.png")
+        generate_portfolio_gallery_card(
+            gallery_items=gallery_items,
+            actor_name=enrolled_data.get("name", "Talent"),
+            best_sim=best_sim,
+            save_path=gallery_card_path
+        )
+        print(f"[+] Saved {len(gallery_items)} Portfolio Headshots to directory: {portfolio_dir}\n")
 
 
 if __name__ == "__main__":
