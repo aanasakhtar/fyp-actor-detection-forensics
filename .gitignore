@@ -75,6 +75,10 @@ venv.bak/
 *.tar.bz2
 *.7z
 
+# Explicitly track small social media test videos in video_storage/
+!video_storage/
+!video_storage/**
+
 # Model weights & Checkpoints (Never commit weights)
 /checkpoints/
 /weights/
