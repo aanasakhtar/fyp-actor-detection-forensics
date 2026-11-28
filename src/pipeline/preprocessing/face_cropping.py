@@ -59,7 +59,7 @@ def crop_context_face(
         if pad_left > 0 or pad_top > 0 or pad_right > 0 or pad_bottom > 0:
             sub_img = cv2.copyMakeBorder(
                 sub_img, pad_top, pad_bottom, pad_left, pad_right, 
-                borderType=cv2.BORDER_REFLECT_101
+                borderType=cv2.BORDER_REPLICATE
             )
         interp = cv2.INTER_AREA if (sub_img.shape[0] >= target_size[1] and sub_img.shape[1] >= target_size[0]) else cv2.INTER_LINEAR
         resized = cv2.resize(sub_img, target_size, interpolation=interp)
@@ -67,10 +67,51 @@ def crop_context_face(
     except Exception:
         # Fallback using numpy if cv2 is absent in development environment
         if pad_left > 0 or pad_top > 0 or pad_right > 0 or pad_bottom > 0:
-            sub_img = np.pad(sub_img, ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0)), mode="reflect")
+            sub_img = np.pad(sub_img, ((pad_top, pad_bottom), (pad_left, pad_right), (0, 0)), mode="edge")
         # Basic nearest neighbor / zoom resize using numpy
         h_s, w_s = sub_img.shape[:2]
         r_indices = (np.linspace(0, h_s - 1, target_size[1])).astype(int)
         c_indices = (np.linspace(0, w_s - 1, target_size[0])).astype(int)
         resized = sub_img[np.ix_(r_indices, c_indices)]
         return resized
+
+
+def extract_tta_face_views(
+    image_bgr: np.ndarray,
+    bbox: np.ndarray,
+    landmarks_5: Optional[np.ndarray] = None,
+    target_size: Tuple[int, int] = (224, 224),
+    base_scale: float = 1.30,
+    use_alignment: bool = True,
+) -> list:
+    """
+    Generate multi-view Test-Time Augmentation (TTA) face crops to stabilize inference
+    against H.264 social media compression noise and affine resampling artifacts:
+      1. Canonical crop (landmark-aligned if enabled, else native bbox crop)
+      2. Horizontally flipped canonical crop
+      3. Unwarped native bounding-box crop at base_scale
+      4. Wider contextual bounding-box crop at base_scale + 0.15
+    """
+    from .face_alignment import align_face_gend
+
+    views = []
+    primary = None
+    if use_alignment and landmarks_5 is not None:
+        primary = align_face_gend(image_bgr, landmarks_5, target_size=target_size, scale=base_scale)
+
+    native_base = crop_context_face(image_bgr, bbox, expansion_factor=base_scale, target_size=target_size)
+    if primary is None:
+        primary = native_base
+
+    if primary is not None:
+        views.append(primary)
+        views.append(np.ascontiguousarray(primary[:, ::-1, :]))
+
+    if use_alignment and native_base is not None:
+        views.append(native_base)
+
+    wide_ctx = crop_context_face(image_bgr, bbox, expansion_factor=base_scale + 0.15, target_size=target_size)
+    if wide_ctx is not None:
+        views.append(wide_ctx)
+
+    return views

@@ -127,6 +127,8 @@ class PerceptionEncoder(nn.Module if torch is not None else object):
             data_config["input_size"] = (3, img_size, img_size)
 
         self._preprocess = timm.data.create_transform(**data_config, is_training=False)
+        inp = data_config.get("input_size", (3, 224, 224))
+        self.input_size = (int(inp[1]), int(inp[2]))
         self.backbone.head = nn.Identity()
         self.features_dim = self.backbone.num_features
 

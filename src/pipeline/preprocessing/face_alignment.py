@@ -41,7 +41,7 @@ def align_face_5point(image_bgr: np.ndarray, landmarks_5: np.ndarray, output_siz
         image_bgr, 
         transform_matrix, 
         (output_size, output_size), 
-        borderMode=cv2.BORDER_REFLECT_101
+        borderMode=cv2.BORDER_REPLICATE
     )
     return aligned
 
@@ -96,7 +96,7 @@ def align_face_gend(
         image_bgr,
         tform,
         target_size,
-        borderMode=cv2.BORDER_REFLECT_101
+        borderMode=cv2.BORDER_REPLICATE
     )
     return aligned
 

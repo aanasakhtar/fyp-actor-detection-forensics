@@ -107,9 +107,17 @@ class BaseGenDDetector:
             self.model = None
             self.processor = None
 
-    def predict_crops(self, crop_images_bgr: List[np.ndarray]) -> List[float]:
+    def get_target_size(self) -> tuple:
+        """Return native spatial resolution (width, height) expected by the backbone."""
+        if self.model is not None and hasattr(self.model, "feature_extractor"):
+            sz = getattr(self.model.feature_extractor, "input_size", None)
+            if isinstance(sz, (tuple, list)) and len(sz) == 2:
+                return (int(sz[1]), int(sz[0]))
+        return (224, 224)
+
+    def predict_crops(self, crop_images_bgr: List[np.ndarray], batch_size: int = 64) -> List[float]:
         """
-        Inference on a list of 224x224 face crops in BGR format.
+        Inference on a list of face crops in BGR format using chunked mini-batches.
         Returns list of manipulation probabilities p(Fake) in [0, 1].
         """
         if not crop_images_bgr:
@@ -126,50 +134,57 @@ class BaseGenDDetector:
 
             # Convert BGR crops to RGB PIL images
             pil_images = [Image.fromarray(cv2.cvtColor(c, cv2.COLOR_BGR2RGB)) for c in crop_images_bgr]
+            use_cuda = hasattr(self.device, "type") and self.device.type == "cuda"
+            all_probs: List[float] = []
 
-            # 1. Use author's native bundled feature_extractor if available
-            if hasattr(self.model, "feature_extractor") and hasattr(self.model.feature_extractor, "preprocess"):
-                tensors = torch.stack([self.model.feature_extractor.preprocess(img) for img in pil_images]).to(self.device)
-            elif self.processor is not None and hasattr(self.processor, "preprocess"):
-                tensors = torch.stack([self.processor.preprocess(img) for img in pil_images]).to(self.device)
-            elif self.processor is not None and hasattr(self.processor, "__call__"):
-                inputs = self.processor(images=pil_images, return_tensors="pt")
-                tensors = inputs["pixel_values"].to(self.device)
-            else:
-                # Built-in tensor normalization fallback (OpenAI CLIP statistics)
-                mean = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
-                std = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
-                batch = []
-                for img in pil_images:
-                    arr = np.array(img.resize((224, 224)), dtype=np.float32) / 255.0
-                    normed = (arr - mean) / std
-                    batch.append(normed.transpose(2, 0, 1))
-                tensors = torch.tensor(np.stack(batch), dtype=torch.float32).to(self.device)
+            for start in range(0, len(pil_images), batch_size):
+                chunk = pil_images[start:start + batch_size]
 
-            with torch.no_grad():
-                outputs = self.model(tensors)
-
-                # Extract logits
-                if hasattr(outputs, "logits"):
-                    logits = outputs.logits
-                elif isinstance(outputs, torch.Tensor):
-                    logits = outputs
-                elif hasattr(outputs, "logits_labels"):
-                    logits = outputs.logits_labels
-                elif isinstance(outputs, (list, tuple)) and len(outputs) > 0:
-                    logits = outputs[0]
+                # 1. Use author's native bundled feature_extractor if available
+                if hasattr(self.model, "feature_extractor") and hasattr(self.model.feature_extractor, "preprocess"):
+                    tensors = torch.stack([self.model.feature_extractor.preprocess(img) for img in chunk]).to(self.device)
+                elif self.processor is not None and hasattr(self.processor, "preprocess"):
+                    tensors = torch.stack([self.processor.preprocess(img) for img in chunk]).to(self.device)
+                elif self.processor is not None and hasattr(self.processor, "__call__"):
+                    inputs = self.processor(images=chunk, return_tensors="pt")
+                    tensors = inputs["pixel_values"].to(self.device)
                 else:
-                    logits = outputs
+                    # Built-in tensor normalization fallback (OpenAI CLIP statistics)
+                    mean = np.array([0.48145466, 0.4578275, 0.40821073], dtype=np.float32)
+                    std = np.array([0.26862954, 0.26130258, 0.27577711], dtype=np.float32)
+                    batch = []
+                    for img in chunk:
+                        arr = np.array(img.resize((224, 224)), dtype=np.float32) / 255.0
+                        normed = (arr - mean) / std
+                        batch.append(normed.transpose(2, 0, 1))
+                    tensors = torch.tensor(np.stack(batch), dtype=torch.float32).to(self.device)
 
-                probs = torch.softmax(logits, dim=-1)
+                with torch.no_grad():
+                    with torch.amp.autocast("cuda", enabled=use_cuda):
+                        outputs = self.model(tensors)
 
-                # Binary classification (Class 0: Real, Class 1: Fake)
-                if probs.shape[-1] >= 2:
-                    fake_probs = probs[:, 1].detach().cpu().numpy().tolist()
-                else:
-                    fake_probs = probs[:, 0].detach().cpu().numpy().tolist()
+                    # Extract logits
+                    if hasattr(outputs, "logits"):
+                        logits = outputs.logits
+                    elif isinstance(outputs, torch.Tensor):
+                        logits = outputs
+                    elif hasattr(outputs, "logits_labels"):
+                        logits = outputs.logits_labels
+                    elif isinstance(outputs, (list, tuple)) and len(outputs) > 0:
+                        logits = outputs[0]
+                    else:
+                        logits = outputs
 
-                return [float(p) for p in fake_probs]
+                    probs = torch.softmax(logits.float(), dim=-1)
+
+                    # Binary classification (Class 0: Real, Class 1: Fake)
+                    if probs.shape[-1] >= 2:
+                        fake_probs = probs[:, 1].detach().cpu().numpy().tolist()
+                    else:
+                        fake_probs = probs[:, 0].detach().cpu().numpy().tolist()
+                    all_probs.extend(float(p) for p in fake_probs)
+
+            return all_probs
 
         except Exception as e:
             logger.error(f"Inference error in GenD ({self.repo_id}): {e}")
@@ -188,6 +203,8 @@ class BaseGenDDetector:
         scores = np.array(frame_scores, dtype=np.float32)
         if method == "mean":
             return float(np.mean(scores))
+        elif method == "median":
+            return float(np.median(scores))
         elif method == "max":
             return float(np.max(scores))
         elif method == "trimmed_mean":
@@ -198,4 +215,5 @@ class BaseGenDDetector:
             return float(np.mean(trimmed))
         elif method == "ratio_above_threshold":
             return float(np.mean(scores > 0.50))
+        return float(np.mean(scores))
         return float(np.mean(scores))

@@ -48,8 +48,12 @@ class ViTDeepfakeDetector:
             self.model = None
             self.processor = None
 
-    def predict_crops(self, crop_images_bgr: List[np.ndarray]) -> List[float]:
-        """Inference on list of face crops in BGR format."""
+    def get_target_size(self) -> tuple:
+        """Return native spatial resolution expected by ViT."""
+        return (224, 224)
+
+    def predict_crops(self, crop_images_bgr: List[np.ndarray], batch_size: int = 64) -> List[float]:
+        """Inference on list of face crops in BGR format using chunked mini-batches."""
         if not crop_images_bgr or self.model is None or self.processor is None:
             return [0.0] * len(crop_images_bgr)
 
@@ -58,15 +62,23 @@ class ViTDeepfakeDetector:
             from PIL import Image
 
             pil_images = [Image.fromarray(cv2.cvtColor(c, cv2.COLOR_BGR2RGB)) for c in crop_images_bgr]
-            inputs = self.processor(images=pil_images, return_tensors="pt")
-            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            use_cuda = hasattr(self.device, "type") and self.device.type == "cuda"
+            all_probs: List[float] = []
 
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-                probs = torch.softmax(outputs.logits, dim=-1)
-                # Class 0: Real, Class 1: Fake
-                fake_probs = probs[:, 1].detach().cpu().numpy().tolist()
-                return [float(p) for p in fake_probs]
+            for start in range(0, len(pil_images), batch_size):
+                chunk = pil_images[start:start + batch_size]
+                inputs = self.processor(images=chunk, return_tensors="pt")
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+                with torch.no_grad():
+                    with torch.amp.autocast("cuda", enabled=use_cuda):
+                        outputs = self.model(**inputs)
+                    probs = torch.softmax(outputs.logits.float(), dim=-1)
+                    # Class 0: Real, Class 1: Fake
+                    fake_probs = probs[:, 1].detach().cpu().numpy().tolist()
+                    all_probs.extend(float(p) for p in fake_probs)
+
+            return all_probs
         except Exception as e:
             logger.error(f"Inference error in ViT Detector: {e}")
             return [0.0] * len(crop_images_bgr)
@@ -83,6 +95,8 @@ class ViTDeepfakeDetector:
         scores = np.array(frame_scores, dtype=np.float32)
         if method == "mean":
             return float(np.mean(scores))
+        elif method == "median":
+            return float(np.median(scores))
         elif method == "max":
             return float(np.max(scores))
         elif method == "trimmed_mean":

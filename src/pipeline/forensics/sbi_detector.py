@@ -100,9 +100,13 @@ class SBIEfficientNetDetector:
             logger.error(f"Failed to load SBI EfficientNet-B4 model: {e}")
             self.model = None
 
-    def predict_crops(self, crop_images_bgr: List[np.ndarray]) -> List[float]:
+    def get_target_size(self) -> tuple:
+        """Return native spatial resolution expected by SBI EfficientNet-B4."""
+        return (self.target_size, self.target_size)
+
+    def predict_crops(self, crop_images_bgr: List[np.ndarray], batch_size: int = 64) -> List[float]:
         """
-        Run inference on a batch of face crops in BGR format.
+        Run inference on a batch of face crops in BGR format using chunked mini-batches.
         Crops are resized to 380x380 and normalized with AdvProp stats (mean=0.5, std=0.5).
         Returns list of manipulation probabilities p(Fake) in [0, 1].
         """
@@ -114,30 +118,38 @@ class SBIEfficientNetDetector:
 
         try:
             import cv2
-            batch_tensors = []
-            for crop in crop_images_bgr:
-                # Resize to expected 380x380
-                if crop.shape[0] != self.target_size or crop.shape[1] != self.target_size:
-                    resized = cv2.resize(crop, (self.target_size, self.target_size), interpolation=cv2.INTER_LINEAR)
-                else:
-                    resized = crop
-                
-                # Convert BGR to RGB
-                rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-                
-                # AdvProp normalization: [-1, 1], mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]
-                advprop_norm = (rgb - 0.5) / 0.5
-                tensor = advprop_norm.transpose(2, 0, 1)  # (C, H, W)
-                batch_tensors.append(tensor)
+            use_cuda = hasattr(self.device, "type") and self.device.type == "cuda"
+            all_probs: List[float] = []
 
-            batch = torch.tensor(np.stack(batch_tensors), dtype=torch.float32).to(self.device)
-            
-            with torch.no_grad():
-                logits = self.model(batch)
-                probs = torch.softmax(logits, dim=-1)
-                # Class 0: Real, Class 1: Fake
-                fake_probs = probs[:, 1].detach().cpu().numpy().tolist()
-                return [float(p) for p in fake_probs]
+            for start in range(0, len(crop_images_bgr), batch_size):
+                chunk = crop_images_bgr[start:start + batch_size]
+                batch_tensors = []
+                for crop in chunk:
+                    # Resize to expected 380x380
+                    if crop.shape[0] != self.target_size or crop.shape[1] != self.target_size:
+                        resized = cv2.resize(crop, (self.target_size, self.target_size), interpolation=cv2.INTER_LINEAR)
+                    else:
+                        resized = crop
+
+                    # Convert BGR to RGB
+                    rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+
+                    # AdvProp normalization: [-1, 1], mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]
+                    advprop_norm = (rgb - 0.5) / 0.5
+                    tensor = advprop_norm.transpose(2, 0, 1)  # (C, H, W)
+                    batch_tensors.append(tensor)
+
+                batch = torch.tensor(np.stack(batch_tensors), dtype=torch.float32).to(self.device)
+
+                with torch.no_grad():
+                    with torch.amp.autocast("cuda", enabled=use_cuda):
+                        logits = self.model(batch)
+                    probs = torch.softmax(logits.float(), dim=-1)
+                    # Class 0: Real, Class 1: Fake
+                    fake_probs = probs[:, 1].detach().cpu().numpy().tolist()
+                    all_probs.extend(float(p) for p in fake_probs)
+
+            return all_probs
         except Exception as e:
             logger.error(f"Inference error in SBI EfficientNet-B4: {e}")
             return [0.0] * len(crop_images_bgr)
@@ -155,6 +167,8 @@ class SBIEfficientNetDetector:
         scores = np.array(frame_scores, dtype=np.float32)
         if method == "mean":
             return float(np.mean(scores))
+        elif method == "median":
+            return float(np.median(scores))
         elif method == "max":
             return float(np.max(scores))
         elif method == "trimmed_mean":
