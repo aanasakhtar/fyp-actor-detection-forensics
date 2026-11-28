@@ -93,8 +93,14 @@ def find_optimal_threshold_on_train(
     y_arr = np.array(y_true)
     sc_arr = np.array(scores)
 
-    if strategy in ["recall_98", "recall_95", "recall_target", "min_fpr_target_recall"]:
-        t_target = 0.98 if strategy == "recall_98" else (0.95 if strategy == "recall_95" else target_recall)
+    if strategy.startswith("recall_"):
+        t_target = 0.98 if strategy == "recall_98" else (
+            0.95 if strategy == "recall_95" else (
+                0.92 if strategy == "recall_92" else (
+                    0.90 if strategy == "recall_90" else target_recall
+                )
+            )
+        )
         valid_indices = np.where(tpr >= t_target)[0]
         if len(valid_indices) > 0:
             # First valid index gives highest threshold (lowest FPR) since thresholds descend
@@ -103,6 +109,23 @@ def find_optimal_threshold_on_train(
         else:
             best_idx = int(np.argmax(tpr - fpr))
             opt_t = float(thresholds[best_idx])
+
+    elif strategy in ["target_90_75", "bi_criterion", "neyman_pearson"]:
+        # Bi-criterion: Recall >= 90% and Specificity >= 75% (FPR <= 25%)
+        valid_indices = np.where((tpr >= 0.90) & (fpr <= 0.25))[0]
+        if len(valid_indices) > 0:
+            best_idx = valid_indices[np.argmax(tpr[valid_indices] - fpr[valid_indices])]
+            opt_t = float(thresholds[best_idx])
+        else:
+            dists = np.sqrt((fpr - 0.15) ** 2 + (tpr - 0.92) ** 2)
+            best_idx = int(np.argmin(dists))
+            opt_t = float(thresholds[best_idx])
+
+    elif strategy in ["youden_w60", "weighted_youden"]:
+        w = 0.60
+        j_w = w * tpr - (1 - w) * fpr
+        best_idx = int(np.argmax(j_w))
+        opt_t = float(thresholds[best_idx])
 
     elif strategy in ["f2", "f_beta"]:
         b2 = beta ** 2
@@ -370,11 +393,11 @@ def main():
     parser.add_argument("--batch-videos", type=int, default=16, help="Videos to batch together before Stage 3 GPU forward pass.")
     parser.add_argument("--max-videos", type=int, default=0, help="0 = exhaust ALL videos (default); >0 caps total videos for quick debug.")
     parser.add_argument("--with-arcface", action="store_true", help="Also run Stage 2 ArcFace embedding extraction on every frame.")
-    parser.add_argument("--strategy", type=str, default="recall_98",
-                        choices=["recall_98", "recall_95", "f2", "youden", "raw_acc"],
-                        help="Threshold calibration strategy on train split (default: recall_98).")
-    parser.add_argument("--target-recall", type=float, default=0.98,
-                        help="Target recall constraint if strategy is recall_target (default: 0.98).")
+    parser.add_argument("--strategy", type=str, default="recall_90",
+                        choices=["recall_90", "recall_92", "recall_95", "recall_98", "target_90_75", "youden_w60", "f2", "youden", "raw_acc"],
+                        help="Threshold calibration strategy on train split (default: recall_90).")
+    parser.add_argument("--target-recall", type=float, default=0.90,
+                        help="Target recall constraint if strategy is recall_target (default: 0.90).")
     parser.add_argument("--output-dir", type=str, default="/kaggle/working/results/celebdf_full_benchmark", help="Output directory.")
     parser.add_argument("--hf-token", type=str, default=None, help="Hugging Face Token.")
     args = parser.parse_args()

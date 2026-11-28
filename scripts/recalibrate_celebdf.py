@@ -61,6 +61,27 @@ def find_threshold_by_strategy(
             opt_t = float(thresholds[best_idx])
             desc = "Fallback Youden"
 
+    elif strategy in ["target_90_75", "bi_criterion", "neyman_pearson"]:
+        # Bi-criterion: Recall >= 90% and Specificity >= 75% (FPR <= 25%)
+        valid_indices = np.where((tpr >= 0.90) & (fpr <= 0.25))[0]
+        if len(valid_indices) > 0:
+            best_idx = valid_indices[np.argmax(tpr[valid_indices] - fpr[valid_indices])]
+            opt_t = float(thresholds[best_idx])
+            desc = "Bi-Criterion (Rec>=90%, Spec>=75%)"
+        else:
+            # Pareto compromise minimizing distance to target (FPR=0.15, TPR=0.92)
+            dists = np.sqrt((fpr - 0.15) ** 2 + (tpr - 0.92) ** 2)
+            best_idx = int(np.argmin(dists))
+            opt_t = float(thresholds[best_idx])
+            desc = "Bi-Criterion (Pareto Target)"
+
+    elif strategy in ["youden_w60", "weighted_youden"]:
+        w = 0.60
+        j_w = w * tpr - (1 - w) * fpr
+        best_idx = int(np.argmax(j_w))
+        opt_t = float(thresholds[best_idx])
+        desc = "Weighted Youden (w=0.60)"
+
     elif strategy in ["f2", "f_beta"]:
         b2 = beta ** 2
         best_f = -1.0
@@ -232,10 +253,13 @@ def main():
     strategies = [
         ("Default (T = 0.50)", "default", 0.50),
         ("Youden's J (Balanced)", "youden", 0.0),
+        ("Weighted Youden (w=0.60)", "youden_w60", 0.60),
         ("Max F2 Score", "f2", 0.0),
-        ("Constrained Recall >= 95%", "recall_95", 0.95),
-        ("Constrained Recall >= 98%", "recall_98", 0.98),
-        ("Constrained Recall >= 99%", "recall_99", 0.99),
+        ("Target: Recall >= 90% (Low FPR)", "recall_90", 0.90),
+        ("Target: Recall >= 92% (Balanced)", "recall_92", 0.92),
+        ("Target: Recall >= 95%", "recall_95", 0.95),
+        ("Target: Recall >= 98%", "recall_98", 0.98),
+        ("Bi-Criterion (Rec>=90%, Spec>=75%)", "target_90_75", 0.90),
     ]
 
     all_comparison = {}
@@ -275,7 +299,7 @@ def main():
         print(f"{'Strategy / Objective':28s} | {'Learned T*':10s} | {'Recall':7s} | {'FPR (Real)':10s} | {'Accuracy':8s} | {'Bal Acc':8s} | {'Precision':9s} | {'F1':7s}")
         print("-" * 128)
         for r in all_comparison[m]:
-            highlight = " <-- TARGET" if "98%" in r["strategy_label"] or "95%" in r["strategy_label"] else ""
+            highlight = " <-- OPTIMAL TARGET" if "Bi-Criterion" in r["strategy_label"] or "Recall >= 90%" in r["strategy_label"] else ""
             print(f"{r['strategy_label']:28s} | {r['learned_threshold']:10.3f} | {r['recall']*100:5.2f}% | {r['fpr_on_real']*100:8.2f}% | {r['accuracy']*100:6.2f}% | {r['balanced_accuracy']*100:6.2f}% | {r['precision']*100:7.2f}% | {r['f1']:7.4f}{highlight}")
         print("="*128 + "\n")
 
