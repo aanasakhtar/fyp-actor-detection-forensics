@@ -72,15 +72,74 @@ def init_forensic_models(model_names: List[str]) -> Dict[str, Any]:
     return {k: v for k, v in models.items() if getattr(v, "model", None) is not None}
 
 
-def find_optimal_threshold_on_train(y_true: List[int], scores: List[float]) -> float:
-    """Optimize threshold strictly on the Training/Calibration split via Youden's J."""
+def find_optimal_threshold_on_train(
+    y_true: List[int],
+    scores: List[float],
+    strategy: str = "youden",
+    target_recall: float = 0.98,
+    beta: float = 2.0
+) -> float:
+    """
+    Optimize threshold strictly on the Training/Calibration split based on objective:
+      - 'recall_98' / 'recall_95': Maximum threshold satisfying Recall >= target (lowest FPR).
+      - 'f2': Maximizes F2 score (Recall weighted 4x over Precision).
+      - 'youden': Maximizes TPR - FPR (Balanced Accuracy).
+      - 'raw_acc': Maximizes raw accuracy.
+    """
     if len(set(y_true)) < 2:
         return 0.50
+
     fpr, tpr, thresholds = roc_curve(y_true, scores)
-    j_scores = tpr - fpr
-    best_idx = int(np.argmax(j_scores))
-    opt_thresh = float(thresholds[best_idx])
-    return round(max(0.10, min(0.95, opt_thresh)), 4)
+    y_arr = np.array(y_true)
+    sc_arr = np.array(scores)
+
+    if strategy in ["recall_98", "recall_95", "recall_target", "min_fpr_target_recall"]:
+        t_target = 0.98 if strategy == "recall_98" else (0.95 if strategy == "recall_95" else target_recall)
+        valid_indices = np.where(tpr >= t_target)[0]
+        if len(valid_indices) > 0:
+            # First valid index gives highest threshold (lowest FPR) since thresholds descend
+            best_idx = valid_indices[0]
+            opt_t = float(thresholds[best_idx])
+        else:
+            best_idx = int(np.argmax(tpr - fpr))
+            opt_t = float(thresholds[best_idx])
+
+    elif strategy in ["f2", "f_beta"]:
+        b2 = beta ** 2
+        best_f = -1.0
+        best_t = 0.50
+        cand_thresh = [t for t in thresholds if 0.05 <= t <= 0.98]
+        for t in (cand_thresh or [0.50]):
+            preds = (sc_arr >= t).astype(int)
+            tp = np.sum((preds == 1) & (y_arr == 1))
+            fp = np.sum((preds == 1) & (y_arr == 0))
+            fn = np.sum((preds == 0) & (y_arr == 1))
+            prec = tp / max(1, tp + fp)
+            rec = tp / max(1, tp + fn)
+            denom = b2 * prec + rec
+            f_val = (1 + b2) * (prec * rec) / denom if denom > 0 else 0.0
+            if f_val > best_f:
+                best_f = f_val
+                best_t = t
+        opt_t = float(best_t)
+
+    elif strategy in ["raw_acc", "accuracy"]:
+        best_acc = -1.0
+        best_t = 0.50
+        cand_thresh = [t for t in thresholds if 0.05 <= t <= 0.98]
+        for t in (cand_thresh or [0.50]):
+            acc = np.mean((sc_arr >= t).astype(int) == y_arr)
+            if acc > best_acc:
+                best_acc = acc
+                best_t = t
+        opt_t = float(best_t)
+
+    else:  # youden
+        j_scores = tpr - fpr
+        best_idx = int(np.argmax(j_scores))
+        opt_t = float(thresholds[best_idx])
+
+    return round(max(0.05, min(0.96, opt_t)), 4)
 
 
 def evaluate_at_threshold(y_true: List[int], scores: List[float], threshold: float) -> Dict[str, Any]:
@@ -311,6 +370,11 @@ def main():
     parser.add_argument("--batch-videos", type=int, default=16, help="Videos to batch together before Stage 3 GPU forward pass.")
     parser.add_argument("--max-videos", type=int, default=0, help="0 = exhaust ALL videos (default); >0 caps total videos for quick debug.")
     parser.add_argument("--with-arcface", action="store_true", help="Also run Stage 2 ArcFace embedding extraction on every frame.")
+    parser.add_argument("--strategy", type=str, default="recall_98",
+                        choices=["recall_98", "recall_95", "f2", "youden", "raw_acc"],
+                        help="Threshold calibration strategy on train split (default: recall_98).")
+    parser.add_argument("--target-recall", type=float, default=0.98,
+                        help="Target recall constraint if strategy is recall_target (default: 0.98).")
     parser.add_argument("--output-dir", type=str, default="/kaggle/working/results/celebdf_full_benchmark", help="Output directory.")
     parser.add_argument("--hf-token", type=str, default=None, help="Hugging Face Token.")
     args = parser.parse_args()
@@ -475,7 +539,9 @@ def main():
     test_metrics_cal: Dict[str, Dict[str, Any]] = {}
 
     for m in model_keys:
-        t_opt = find_optimal_threshold_on_train(train_y, train_scores[m])
+        t_opt = find_optimal_threshold_on_train(
+            train_y, train_scores[m], strategy=args.strategy, target_recall=args.target_recall
+        )
         train_thresholds[m] = t_opt
         train_metrics_cal[m] = evaluate_at_threshold(train_y, train_scores[m], t_opt)
         test_metrics_05[m] = evaluate_at_threshold(test_y, test_scores[m], 0.50)
@@ -483,7 +549,7 @@ def main():
 
     # Print Tables
     print("\n" + "="*128)
-    print(f"      TABLE 1: CALIBRATION / TRAIN SPLIT THRESHOLD OPTIMIZATION (N = {len(train_y)} VIDEOS)")
+    print(f"      TABLE 1: CALIBRATION / TRAIN SPLIT THRESHOLD OPTIMIZATION [{args.strategy.upper()}] (N = {len(train_y)} VIDEOS)")
     print("="*128)
     print(f"{'Forensic Detector':24s} | {'Learned T*':10s} | {'ROC-AUC':7s} | {'Accuracy':8s} | {'Bal Acc':8s} | {'Recall':7s} | {'FPR (Real)':10s} | {'F1':7s}")
     print("-" * 128)
@@ -499,7 +565,7 @@ def main():
         print(f"{m:24s} | {0.50:10.3f} | {d['roc_auc']:7.4f} | {d['accuracy']*100:6.2f}% | {d['balanced_accuracy']*100:6.2f}% | {d['recall']*100:5.2f}% | {d['fpr_on_real']*100:8.2f}% | {d['f1']:7.4f}")
 
     print("\n" + "="*128)
-    print(f"      TABLE 3: HELD-OUT TEST SPLIT PERFORMANCE @ FROZEN TRAIN-OPTIMIZED T* (N = {len(test_y)} VIDEOS)")
+    print(f"      TABLE 3: HELD-OUT TEST SPLIT PERFORMANCE @ FROZEN TRAIN-OPTIMIZED T* [{args.strategy.upper()}] (N = {len(test_y)} VIDEOS)")
     print("="*128)
     print(f"{'Forensic Detector':24s} | {'Frozen T*':10s} | {'ROC-AUC':7s} | {'Accuracy':8s} | {'Bal Acc':8s} | {'Recall':7s} | {'FPR (Real)':10s} | {'F1':7s}")
     print("-" * 128)
